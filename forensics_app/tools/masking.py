@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import tkinter as tk
+from pathlib import Path
+from tkinter import filedialog
 
 import numpy as np
 from PIL import Image, ImageOps
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
-from .constants import MASK_MESSAGES, MASK_OPERATIONS
+from .constants import OPEN_TYPES
 from .utils import choose_masking
 
 
@@ -29,39 +31,43 @@ class MaskingTool(ForensicsTool):
 		if selection is None:
 			return None
 
-		# Read image
-		image = document.current
-		image_numpy = np.array(image)
-		# Create mask
-		mask = np.array(ImageOps.grayscale(image)) > selection.threshold
-		if image_numpy.ndim == 3:
-			mask = mask[:, :, np.newaxis]
-		selected_mask = mask if selection.keep_bright else ~mask
-		# Apply mask to image
-		if selection.binary:
-			image_numpy = selected_mask.astype(np.uint8) * 255
-		selected_image = ~image_numpy if selection.invert_image else image_numpy
-		image_numpy = selected_image * selected_mask
-		# Just keep the first channel for binary output
-		if selection.binary and image_numpy.ndim == 3:
-			image_numpy = image_numpy[:, :, 0]
-		output_image = Image.fromarray(image_numpy)
-
-		mode = "binary" if selection.binary else "bright" if selection.keep_bright else "dark"
-		operation = MASK_OPERATIONS[mode]
-		message = MASK_MESSAGES[mode].format(
-			threshold=selection.threshold,
-			region="bright" if selection.keep_bright else "dark",
+		filename = filedialog.askopenfilename(
+			title="Choose image to mask",
+			filetypes=OPEN_TYPES,
 		)
+		if not filename:
+			return None
+
+		with Image.open(filename) as image:
+			on_top = image.convert("RGBA").resize(document.current.size)
+		image_numpy = np.array(on_top)
+		# Create mask
+		mask_image = document.current if selection.use_background else on_top
+		mask = np.array(ImageOps.grayscale(mask_image)) > selection.threshold
+		selected_mask = mask if selection.keep_bright else ~mask
+		# Apply mask to the image placed on top
+		if selection.binary:
+			image_numpy[:, :, :3] = 255
+		elif selection.invert_image:
+			image_numpy[:, :, :3] = ~image_numpy[:, :, :3]
+		
+		# Remove pixels that do not pass the filter
+		image_numpy[:, :, 3] *= selected_mask
+		masked_image = Image.fromarray(image_numpy)
+		output_image = Image.alpha_composite(document.current.convert("RGBA"), masked_image).convert("RGB")
+
+		mask_source = "background" if selection.use_background else "foreground"
 		return ToolResult(
 			image=output_image,
-			message=message,
+			message=f"Applied {mask_source}-brightness mask to {Path(filename).name}.",
 			details={
-				"Operation": operation,
+				"Operation": "Masking composite",
 				"Threshold": selection.threshold,
 				"Binary output": selection.binary,
 				"Retained pixels": "Bright" if selection.keep_bright else "Dark",
+				"Mask source": mask_source.title(),
 				"Image inverted": selection.invert_image,
+				"Foreground": Path(filename).name,
 				"Output mode": output_image.mode,
 			},
 		)

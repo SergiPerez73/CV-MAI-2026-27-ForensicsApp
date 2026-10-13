@@ -1,6 +1,10 @@
 """Shared values used by image-processing tools."""
 
 CHANNELS = {"Red": 0, "Green": 1, "Blue": 2}
+OPEN_TYPES = [
+	("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp"),
+	("All files", "*.*"),
+]
 
 MIN_THRESHOLD = 0
 MAX_THRESHOLD = 255
@@ -9,18 +13,13 @@ DEFAULT_BINARY = False
 DEFAULT_KEEP_BRIGHT = True
 DEFAULT_INVERT_IMAGE = False
 MASK_OPTIONS = {
-	"bright": "Keep bright pixels",
-	"dark": "Keep dark pixels",
+	"bright": "Select bright pixels",
+	"dark": "Select dark pixels",
 }
-MASK_OPERATIONS = {
-	"binary": "Binary mask",
-	"bright": "Bright-pixel mask",
-	"dark": "Dark-pixel mask",
-}
-MASK_MESSAGES = {
-	"binary": "Created a binary mask for {region} pixels at threshold {threshold}.",
-	"bright": "Kept pixels brighter than {threshold}.",
-	"dark": "Kept pixels at or below {threshold}.",
+FILTER_NAMES = {
+	"gaussian": "Gaussian smoothing",
+	"median": "Median denoising",
+	"sobel": "Sobel edge detection",
 }
 CONTRAST_OPTIONS = {
 	"low_contrast": "Create low-contrast image",

@@ -2,9 +2,14 @@
 
 from .channel_split import ChannelSplitTool
 from .channel_swap import ChannelSwapTool
+from .canny_edge_detection import CannyEdgeDetectionTool
 from .contrast_enhancement import ContrastEnhancementTool
+from .convolution import ConvolutionTool
+from .edge_visualization import EdgeVisualizationTool
+from .filters import FiltersTool
 from .grayscale import GrayscaleTool
 from .histogram import HistogramTool
+from .image_sharpening import ImageSharpeningTool
 from .image_info import ImageInfoTool
 from .masking import MaskingTool
 from .registry import ToolRegistry
@@ -18,6 +23,11 @@ def build_tool_registry() -> ToolRegistry:
             ChannelSplitTool(),
             ChannelSwapTool(),
             MaskingTool(),
+            CannyEdgeDetectionTool(),
+            ConvolutionTool(),
+            FiltersTool(),
+            EdgeVisualizationTool(),
+            ImageSharpeningTool(),
             ContrastEnhancementTool(),
             HistogramTool(),
         ]
@@ -29,7 +39,12 @@ __all__ = [
     "build_tool_registry",
     "ChannelSplitTool",
     "ChannelSwapTool",
+    "CannyEdgeDetectionTool",
     "ContrastEnhancementTool",
+    "ConvolutionTool",
+    "EdgeVisualizationTool",
+    "FiltersTool",
     "HistogramTool",
+    "ImageSharpeningTool",
     "MaskingTool",
 ]
