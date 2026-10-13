@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
+from tkinter import ttk
 
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -12,7 +14,53 @@ from skimage import feature
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
-from .utils import choose_edge_visualization
+from .utils import add_dialog_buttons, add_numeric_field, create_dialog, wait_for_dialog
+
+
+@dataclass(frozen=True)
+class EdgeVisualizationSettings:
+	sigma: float
+	low_threshold: float
+	high_threshold: float
+	line_width: float
+
+
+def choose_edge_visualization(parent: tk.Misc, *, title: str) -> EdgeVisualizationSettings | None:
+	dialog = create_dialog(parent, title=title)
+	selected: EdgeVisualizationSettings | None = None
+	sigma_value = tk.StringVar(master=dialog, value="2.0")
+	low_value = tk.StringVar(master=dialog, value="0.1")
+	high_value = tk.StringVar(master=dialog, value="0.2")
+	line_width_value = tk.StringVar(master=dialog, value="0.8")
+	error_text = tk.StringVar(master=dialog)
+
+	def apply_settings() -> None:
+		nonlocal selected
+		try:
+			sigma = float(sigma_value.get())
+			low_threshold = float(low_value.get())
+			high_threshold = float(high_value.get())
+			line_width = float(line_width_value.get())
+		except ValueError:
+			error_text.set("Enter valid numeric values.")
+			return
+		if sigma <= 0 or line_width <= 0 or not 0 <= low_threshold < high_threshold <= 1:
+			error_text.set("Use positive sigma and width, and 0 <= low < high <= 1.")
+			return
+		selected = EdgeVisualizationSettings(sigma, low_threshold, high_threshold, line_width)
+		dialog.destroy()
+
+	for label, value in (
+		("Sigma:", sigma_value),
+		("Low threshold (0-1):", low_value),
+		("High threshold (0-1):", high_value),
+		("Contour width:", line_width_value),
+	):
+		add_numeric_field(dialog, label, value)
+	ttk.Label(dialog, textvariable=error_text).pack(anchor="w", padx=16, pady=(6, 0))
+	add_dialog_buttons(dialog, apply_settings)
+	wait_for_dialog(parent, dialog)
+	return selected
 
 
 class EdgeVisualizationTool(ForensicsTool):

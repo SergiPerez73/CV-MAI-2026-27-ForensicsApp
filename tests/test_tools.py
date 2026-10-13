@@ -7,19 +7,109 @@ from PIL import Image
 from forensics_app.core import ImageDocument
 from forensics_app.tools.channel_split import ChannelSplitTool
 from forensics_app.tools.channel_swap import ChannelSwapTool
-from forensics_app.tools.canny_edge_detection import CannyEdgeDetectionTool
+from forensics_app.tools.canny_edge_detection import CannyEdgeDetectionTool, CannySettings
 from forensics_app.tools.contrast_enhancement import ContrastEnhancementTool
-from forensics_app.tools.convolution import ConvolutionTool
-from forensics_app.tools.edge_visualization import EdgeVisualizationTool
+from forensics_app.tools.convolution import ConvolutionTool, ConvolutionSettings
+from forensics_app.tools.edge_visualization import EdgeVisualizationTool, EdgeVisualizationSettings
 from forensics_app.tools.grayscale import GrayscaleTool
-from forensics_app.tools.filters import FiltersTool
+from forensics_app.tools.filters import FiltersTool, FilterSettings
 from forensics_app.tools.histogram import HistogramTool
-from forensics_app.tools.image_sharpening import ImageSharpeningTool
+from forensics_app.tools.image_sharpening import ImageSharpeningTool, SharpeningSettings
 from forensics_app.tools.image_info import ImageInfoTool
 from forensics_app.tools.registry import ToolRegistry
-from forensics_app.tools.masking import MaskingTool
-from forensics_app.tools.utils import CannySettings, ConvolutionSettings, FilterSettings, MaskingSettings, SharpeningSettings
-from forensics_app.tools.utils import EdgeVisualizationSettings
+from forensics_app.tools.masking import MaskingTool, MaskingSettings
+from forensics_app.tools.utils import (
+    add_dialog_buttons,
+    add_numeric_field,
+    choose_option,
+    create_dialog,
+    wait_for_dialog,
+)
+
+
+class DialogHelperTests(unittest.TestCase):
+    @patch("forensics_app.tools.utils.tk.Toplevel")
+    def test_create_dialog_configures_owner_and_title(self, toplevel) -> None:
+        parent = MagicMock()
+
+        dialog = create_dialog(parent, title="Settings")
+
+        self.assertIs(dialog, toplevel.return_value)
+        toplevel.assert_called_once_with(parent)
+        dialog.title.assert_called_once_with("Settings")
+        dialog.transient.assert_called_once_with(parent)
+        dialog.resizable.assert_called_once_with(False, False)
+
+    @patch("forensics_app.tools.utils.tk.Button")
+    @patch("forensics_app.tools.utils.ttk.Button")
+    @patch("forensics_app.tools.utils.ttk.Frame")
+    def test_dialog_buttons_use_apply_and_destroy_callbacks(self, frame, apply_button, cancel_button) -> None:
+        dialog = MagicMock()
+        apply_settings = MagicMock()
+
+        add_dialog_buttons(dialog, apply_settings)
+
+        apply_button.call_args.kwargs["command"]()
+        cancel_button.call_args.kwargs["command"]()
+        apply_settings.assert_called_once_with()
+        dialog.destroy.assert_called_once_with()
+        frame.assert_called_once_with(dialog)
+
+    @patch("forensics_app.tools.utils.ttk.Spinbox")
+    @patch("forensics_app.tools.utils.ttk.Label")
+    @patch("forensics_app.tools.utils.ttk.Frame")
+    def test_numeric_field_uses_supplied_variable(self, frame, label, spinbox) -> None:
+        dialog = MagicMock()
+        value = MagicMock()
+
+        control = add_numeric_field(dialog, "Sigma:", value)
+
+        self.assertIs(control, spinbox.return_value)
+        label.assert_called_once_with(frame.return_value, text="Sigma:")
+        spinbox.assert_called_once_with(frame.return_value, textvariable=value, width=8)
+
+    def test_wait_for_dialog_centers_and_handles_cancellation(self) -> None:
+        parent = MagicMock()
+        owner = parent.winfo_toplevel.return_value
+        owner.winfo_rootx.return_value = 100
+        owner.winfo_rooty.return_value = 50
+        owner.winfo_width.return_value = 800
+        owner.winfo_height.return_value = 600
+        dialog = MagicMock()
+        dialog.winfo_width.return_value = 200
+        dialog.winfo_height.return_value = 100
+
+        wait_for_dialog(parent, dialog)
+
+        dialog.geometry.assert_called_once_with("+400+300")
+        dialog.protocol.assert_called_once_with("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.grab_set.assert_called_once_with()
+        parent.wait_window.assert_called_once_with(dialog)
+        dialog.bind.call_args.args[1](None)
+        dialog.destroy.assert_called_once_with()
+
+    @patch("forensics_app.tools.utils.wait_for_dialog")
+    @patch("forensics_app.tools.utils.create_dialog")
+    @patch("forensics_app.tools.utils.ttk.Frame")
+    @patch("forensics_app.tools.utils.ttk.Label")
+    @patch("forensics_app.tools.utils.ttk.Button")
+    def test_choose_option_returns_selection_and_disables_excluded_options(
+        self, button, _label, _frame, create, wait
+    ) -> None:
+        wait.side_effect = lambda *_args: button.call_args_list[1].kwargs["command"]()
+        parent = MagicMock()
+
+        result = choose_option(
+            parent, title="Channel", prompt="Choose:",
+            options={"red": "Red", "blue": "Blue"}, disabled_options={"red"},
+        )
+
+        self.assertEqual(result, "blue")
+        self.assertEqual(button.call_args_list[0].kwargs["state"], "disabled")
+        self.assertEqual(button.call_args_list[1].kwargs["state"], "normal")
+        create.return_value.destroy.assert_called_once_with()
+        wait.side_effect = None
+        self.assertIsNone(choose_option(parent, title="Channel", prompt="Choose:", options={"red": "Red"}))
 
 
 class ToolTests(unittest.TestCase):

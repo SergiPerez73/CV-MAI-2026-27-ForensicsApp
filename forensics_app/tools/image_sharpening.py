@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
+from tkinter import ttk
 
 import numpy as np
 from PIL import Image
@@ -10,7 +12,42 @@ from skimage import filters
 
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
-from .utils import choose_sharpening
+from .utils import add_dialog_buttons, add_numeric_field, create_dialog, wait_for_dialog
+
+
+@dataclass(frozen=True)
+class SharpeningSettings:
+	radius: float
+	amount: float
+
+
+def choose_sharpening(parent: tk.Misc, *, title: str) -> SharpeningSettings | None:
+	dialog = create_dialog(parent, title=title)
+	selected: SharpeningSettings | None = None
+	radius_value = tk.StringVar(master=dialog, value="2.0")
+	amount_value = tk.StringVar(master=dialog, value="1.5")
+	error_text = tk.StringVar(master=dialog)
+
+	def apply_settings() -> None:
+		nonlocal selected
+		try:
+			radius = float(radius_value.get())
+			amount = float(amount_value.get())
+		except ValueError:
+			error_text.set("Enter valid numeric values.")
+			return
+		if radius <= 0 or amount < 0:
+			error_text.set("Use a positive radius and an amount of 0 or more.")
+			return
+		selected = SharpeningSettings(radius, amount)
+		dialog.destroy()
+
+	for label, value in (("Radius:", radius_value), ("Amount:", amount_value)):
+		add_numeric_field(dialog, label, value)
+	ttk.Label(dialog, textvariable=error_text).pack(anchor="w", padx=16, pady=(6, 0))
+	add_dialog_buttons(dialog, apply_settings)
+	wait_for_dialog(parent, dialog)
+	return selected
 
 
 class ImageSharpeningTool(ForensicsTool):

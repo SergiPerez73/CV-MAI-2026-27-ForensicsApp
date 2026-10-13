@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import tkinter as tk
+from tkinter import ttk
 
 import numpy as np
 from PIL import Image
@@ -11,7 +13,63 @@ from skimage import filters
 from forensics_app.core import ImageDocument
 from .base import ForensicsTool, ToolResult
 from .constants import FILTER_NAMES
-from .utils import choose_filter
+from .utils import add_dialog_buttons, create_dialog, wait_for_dialog
+
+
+@dataclass(frozen=True)
+class FilterSettings:
+	name: str
+	sigma: float
+
+
+def choose_filter(parent: tk.Misc, *, title: str) -> FilterSettings | None:
+	dialog = create_dialog(parent, title=title)
+	selected: FilterSettings | None = None
+	filter_value = tk.StringVar(master=dialog, value="gaussian")
+	sigma_value = tk.StringVar(master=dialog, value="2.0")
+	error_text = tk.StringVar(master=dialog)
+
+	def update_sigma_state(_event: tk.Event | None = None) -> None:
+		sigma_control.configure(state="normal" if filter_value.get() == "gaussian" else "disabled")
+
+	def apply_settings() -> None:
+		nonlocal selected
+		try:
+			sigma = float(sigma_value.get())
+		except ValueError:
+			error_text.set("Enter a sigma between 0.1 and 20.")
+			return
+		if not 0.1 <= sigma <= 20:
+			error_text.set("Enter a sigma between 0.1 and 20.")
+			return
+		selected = FilterSettings(filter_value.get(), sigma)
+		dialog.destroy()
+
+	ttk.Label(dialog, text="Filter:").pack(anchor="w", padx=16, pady=(14, 4))
+	filter_control = ttk.Combobox(
+		dialog,
+		textvariable=filter_value,
+		values=("gaussian", "median", "sobel"),
+		state="readonly",
+		width=18,
+	)
+	filter_control.pack(anchor="w", padx=16, pady=(0, 8))
+	filter_control.bind("<<ComboboxSelected>>", update_sigma_state)
+	ttk.Label(dialog, text="Gaussian sigma:").pack(anchor="w", padx=16)
+	sigma_control = ttk.Spinbox(
+		dialog,
+		from_=0.1,
+		to=20,
+		increment=0.1,
+		textvariable=sigma_value,
+		width=7,
+	)
+	sigma_control.pack(anchor="w", padx=16, pady=(0, 6))
+	ttk.Label(dialog, textvariable=error_text).pack(anchor="w", padx=16)
+	add_dialog_buttons(dialog, apply_settings)
+	update_sigma_state()
+	wait_for_dialog(parent, dialog)
+	return selected
 
 
 class FiltersTool(ForensicsTool):
