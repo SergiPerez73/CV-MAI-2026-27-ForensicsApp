@@ -15,7 +15,7 @@ from .utils import choose_channel
 class ChannelSwapTool(ForensicsTool):
     tool_id = "channel_swap"
     title = "Swap color channels"
-    category = "Image processing"
+    category = "Set 2"
     description = "Swap the values of any two color channels in the working image."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

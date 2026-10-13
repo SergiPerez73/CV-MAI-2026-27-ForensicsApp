@@ -75,7 +75,7 @@ def choose_filter(parent: tk.Misc, *, title: str) -> FilterSettings | None:
 class FiltersTool(ForensicsTool):
 	tool_id = "filters"
 	title = "Filters"
-	category = "Image processing"
+	category = "Set 3"
 	description = "Apply Gaussian smoothing, median denoising, or Sobel edge detection."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

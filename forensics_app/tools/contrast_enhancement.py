@@ -19,7 +19,7 @@ from .utils import choose_option
 class ContrastEnhancementTool(ForensicsTool):
 	tool_id = "contrast_enhancement"
 	title = "Contrast enhancement"
-	category = "Image processing"
+	category = "Set 2"
 	description = "Apply low-contrast rescaling, contrast stretching, histogram equalization, or CLAHE."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

@@ -66,7 +66,7 @@ def choose_edge_visualization(parent: tk.Misc, *, title: str) -> EdgeVisualizati
 class EdgeVisualizationTool(ForensicsTool):
 	tool_id = "edge_visualization"
 	title = "Edge visualization"
-	category = "Image processing"
+	category = "Set 3"
 	description = "Overlay Canny edge contours in red on the original image."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

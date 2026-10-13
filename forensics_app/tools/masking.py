@@ -146,7 +146,7 @@ def choose_masking(
 class MaskingTool(ForensicsTool):
 	tool_id = "masking"
 	title = "Masking"
-	category = "Image processing"
+	category = "Set 2"
 	description = "Create a binary mask or retain pixels above or below a chosen threshold."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

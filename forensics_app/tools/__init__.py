@@ -18,18 +18,18 @@ from .registry import ToolRegistry
 def build_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
-            ImageInfoTool(),
             GrayscaleTool(),
+            ImageInfoTool(),
             ChannelSplitTool(),
             ChannelSwapTool(),
             MaskingTool(),
+            HistogramTool(),
+            ContrastEnhancementTool(),
             CannyEdgeDetectionTool(),
             ConvolutionTool(),
             FiltersTool(),
             EdgeVisualizationTool(),
             ImageSharpeningTool(),
-            ContrastEnhancementTool(),
-            HistogramTool(),
         ]
     )
 

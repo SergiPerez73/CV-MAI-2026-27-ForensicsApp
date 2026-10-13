@@ -53,7 +53,7 @@ def choose_sharpening(parent: tk.Misc, *, title: str) -> SharpeningSettings | No
 class ImageSharpeningTool(ForensicsTool):
 	tool_id = "image_sharpening"
 	title = "Image sharpening"
-	category = "Image processing"
+	category = "Set 3"
 	description = "Sharpen an image with a configurable unsharp mask."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

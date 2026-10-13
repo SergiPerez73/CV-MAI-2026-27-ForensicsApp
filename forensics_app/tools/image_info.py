@@ -11,7 +11,7 @@ from .base import ForensicsTool, ToolResult
 class ImageInfoTool(ForensicsTool):
     tool_id = "image_info"
     title = "Inspect image"
-    category = "Starter tools"
+    category = "Set 1"
     description = "Report basic properties without changing the image."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:

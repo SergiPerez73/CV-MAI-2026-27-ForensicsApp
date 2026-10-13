@@ -13,7 +13,7 @@ from .base import ForensicsTool, ToolResult
 class HistogramTool(ForensicsTool):
     tool_id = "histogram"
     title = "View channel histogram"
-    category = "Image analysis"
+    category = "Set 2"
     description = "Plot red, green, and blue pixel frequencies across intensities 0–255."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:

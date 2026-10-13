@@ -13,7 +13,7 @@ from .base import ForensicsTool, ToolResult
 class GrayscaleTool(ForensicsTool):
     tool_id = "grayscale"
     title = "Convert to grayscale"
-    category = "Starter tools"
+    category = "Set 1"
     description = "Convert the working image to an 8-bit grayscale image."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult:

@@ -472,6 +472,33 @@ class ToolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ToolRegistry([GrayscaleTool(), GrayscaleTool()])
 
+    def test_registry_groups_tools_into_course_sets(self) -> None:
+        registry = ToolRegistry(
+            [
+                GrayscaleTool(),
+                ImageInfoTool(),
+                ChannelSplitTool(),
+                ChannelSwapTool(),
+                MaskingTool(),
+                HistogramTool(),
+                ContrastEnhancementTool(),
+                CannyEdgeDetectionTool(),
+                ConvolutionTool(),
+                FiltersTool(),
+                EdgeVisualizationTool(),
+                ImageSharpeningTool(),
+            ]
+        )
+
+        self.assertEqual(
+            tuple((category, tuple(tool.tool_id for tool in tools)) for category, tools in registry.categories()),
+            (
+                ("Set 1", ("grayscale", "image_info")),
+                ("Set 2", ("channel_split", "channel_swap", "masking", "histogram", "contrast_enhancement")),
+                ("Set 3", ("canny_edge_detection", "convolution", "filters", "edge_visualization", "image_sharpening")),
+            ),
+        )
+
     def test_histogram_renders_rgb_curves_without_mutating_document(self) -> None:
         document = ImageDocument()
         document.current = Image.new("RGB", (2, 2))

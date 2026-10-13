@@ -16,7 +16,7 @@ from .utils import choose_channel
 class ChannelSplitTool(ForensicsTool):
     tool_id = "channel_split"
     title = "Split color channel"
-    category = "Image processing"
+    category = "Set 2"
     description = "Extract the red, green, or blue channel as a grayscale image."
 
     def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

@@ -60,7 +60,7 @@ def choose_convolution(parent: tk.Misc, *, title: str) -> ConvolutionSettings | 
 class ConvolutionTool(ForensicsTool):
 	tool_id = "convolution"
 	title = "Convolution"
-	category = "Image processing"
+	category = "Set 3"
 	description = "Apply a mean convolution with a selected kernel size and direction."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:

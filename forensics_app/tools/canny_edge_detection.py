@@ -60,7 +60,7 @@ def choose_canny(parent: tk.Misc, *, title: str) -> CannySettings | None:
 class CannyEdgeDetectionTool(ForensicsTool):
 	tool_id = "canny_edge_detection"
 	title = "Canny edge detection"
-	category = "Image processing"
+	category = "Set 3"
 	description = "Detect edges with configurable smoothing and hysteresis thresholds."
 
 	def run(self, parent: tk.Misc, document: ImageDocument) -> ToolResult | None:
