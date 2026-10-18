@@ -14,10 +14,14 @@ from forensics_app.tools.edge_visualization import EdgeVisualizationTool, EdgeVi
 from forensics_app.tools.grayscale import GrayscaleTool
 from forensics_app.tools.filters import FiltersTool, FilterSettings
 from forensics_app.tools.histogram import HistogramTool
+from forensics_app.tools.hog import HOGSettings, HOGTool
 from forensics_app.tools.image_sharpening import ImageSharpeningTool, SharpeningSettings
 from forensics_app.tools.image_info import ImageInfoTool
 from forensics_app.tools.registry import ToolRegistry
 from forensics_app.tools.masking import MaskingTool, MaskingSettings
+from forensics_app.tools.normalized_cross_correlation import NormalizedCrossCorrelationTool
+from forensics_app.tools.person_detection import PersonDetectionSettings, PersonDetectionTool
+from forensics_app.tools.template_matching import TemplateMatchingSettings, TemplateMatchingTool
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -113,6 +117,130 @@ class DialogHelperTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
+    @patch(
+        "forensics_app.tools.person_detection.choose_person_detection",
+        return_value=PersonDetectionSettings(9, 8, 3, "dot_product"),
+    )
+    @patch(
+        "forensics_app.tools.person_detection.filedialog.askopenfilename",
+        return_value="person.png",
+    )
+    @patch("forensics_app.tools.person_detection.Image.open")
+    @patch("forensics_app.tools.person_detection.feature.hog")
+    def test_person_detection_uses_selected_hog_settings_and_metric(
+        self, hog, open_image, _choose_file, _choose_settings
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (24, 24), "white")
+        template_context = MagicMock()
+        template_context.__enter__.return_value = Image.new("RGB", (16, 16), "white")
+        open_image.return_value = template_context
+        hog.side_effect = [
+            np.array([1.0, 0.0]),
+            np.array([2.0, 0.0]),
+            np.array([1.0, 0.0]),
+            np.array([3.0, 0.0]),
+            np.array([4.0, 0.0]),
+        ]
+
+        result = PersonDetectionTool().run(None, document)
+
+        self.assertEqual(hog.call_count, 5)
+        self.assertEqual(hog.call_args.kwargs, {
+            "orientations": 9,
+            "pixels_per_cell": (8, 8),
+            "cells_per_block": (3, 3),
+            "channel_axis": -1,
+        })
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.image.size, (24, 24))
+        self.assertEqual(result.details["Metric"], "Dot product")
+        self.assertEqual(result.details["Location"], "8, 8")
+
+    @patch(
+        "forensics_app.tools.hog.choose_hog",
+        return_value=HOGSettings(9, 8, 3),
+    )
+    @patch("forensics_app.tools.hog.feature.hog")
+    def test_hog_uses_selected_configuration_and_returns_visualization(
+        self, hog, _choose_hog
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGBA", (16, 16), (128, 128, 128, 64))
+        hog.return_value = np.ones(36), np.ones((16, 16))
+
+        result = HOGTool().run(None, document)
+
+        self.assertEqual(hog.call_args.kwargs, {
+            "orientations": 9,
+            "pixels_per_cell": (8, 8),
+            "cells_per_block": (3, 3),
+            "visualize": True,
+        })
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.image.size, document.current.size)
+        self.assertEqual(result.details["Orientations"], 9)
+
+    @patch(
+        "forensics_app.tools.template_matching.choose_template_matching",
+        return_value=TemplateMatchingSettings(45.0, 0.8),
+    )
+    @patch(
+        "forensics_app.tools.template_matching.filedialog.askopenfilename",
+        return_value="template.png",
+    )
+    @patch("forensics_app.tools.template_matching.Image.open")
+    @patch("forensics_app.tools.template_matching.transform.rotate")
+    @patch("forensics_app.tools.template_matching.feature.match_template")
+    def test_template_matching_rotates_template_and_uses_selected_threshold(
+        self, match_template, rotate, open_image, _choose_file, _choose_settings
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGBA", (5, 5), (128, 128, 128, 64))
+        template_context = MagicMock()
+        template_context.__enter__.return_value = Image.new("RGBA", (2, 2), (255, 255, 255, 64))
+        open_image.return_value = template_context
+        rotate.return_value = np.ones((2, 2))
+        response = np.zeros((5, 5))
+        response[2, 3] = 0.9
+        match_template.return_value = response
+
+        result = TemplateMatchingTool().run(None, document)
+
+        rotate.assert_called_once_with(rotate.call_args.args[0], 45.0)
+        self.assertEqual(match_template.call_args.kwargs, {"pad_input": True})
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.details["Angle"], 45.0)
+        self.assertEqual(result.details["Threshold"], 0.8)
+
+    @patch(
+        "forensics_app.tools.normalized_cross_correlation.filedialog.askopenfilename",
+        return_value="template.png",
+    )
+    @patch("forensics_app.tools.normalized_cross_correlation.Image.open")
+    @patch("forensics_app.tools.normalized_cross_correlation.feature.match_template")
+    def test_normalized_cross_correlation_returns_response_map(
+        self, match_template, open_image, _choose_file
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGBA", (4, 3), (128, 128, 128, 64))
+        template_context = MagicMock()
+        template_context.__enter__.return_value = Image.new("RGBA", (2, 2), (255, 255, 255, 64))
+        open_image.return_value = template_context
+        match_template.return_value = np.array(
+            [[-1.0, -0.5, 0.0, 0.5], [0.0, 0.8, 1.0, 0.0], [-1.0, 0.0, 0.2, 0.0]]
+        )
+
+        result = NormalizedCrossCorrelationTool().run(None, document)
+
+        self.assertEqual(match_template.call_args.kwargs, {"pad_input": True})
+        self.assertEqual(match_template.call_args.args[0].shape, (3, 4))
+        self.assertEqual(match_template.call_args.args[1].shape, (2, 2))
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.image.size, document.current.size)
+        self.assertEqual(result.details["Operation"], "Normalized cross-correlation image")
+        self.assertNotIn("Threshold", result.details)
+
     @patch(
         "forensics_app.tools.image_sharpening.choose_sharpening",
         return_value=SharpeningSettings(2.0, 1.5),
@@ -487,6 +615,10 @@ class ToolTests(unittest.TestCase):
                 FiltersTool(),
                 EdgeVisualizationTool(),
                 ImageSharpeningTool(),
+                NormalizedCrossCorrelationTool(),
+                TemplateMatchingTool(),
+                HOGTool(),
+                PersonDetectionTool(),
             ]
         )
 
@@ -496,6 +628,7 @@ class ToolTests(unittest.TestCase):
                 ("Set 1", ("grayscale", "image_info")),
                 ("Set 2", ("channel_split", "channel_swap", "masking", "histogram", "contrast_enhancement")),
                 ("Set 3", ("canny_edge_detection", "convolution", "filters", "edge_visualization", "image_sharpening")),
+                ("Set 4", ("normalized_cross_correlation", "template_matching", "hog", "person_detection")),
             ),
         )
 

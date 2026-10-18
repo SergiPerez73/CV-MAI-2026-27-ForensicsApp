@@ -27,6 +27,7 @@ class MainWindow:
         self.registry = registry
         self.document = ImageDocument()
         self.status = tk.StringVar(value="Ready. Open an image to begin.")
+        self.zoom_value = tk.StringVar(value="Fit")
 
         self._configure_window()
         self._build_menu()
@@ -80,6 +81,17 @@ class MainWindow:
         self.redo_button = ttk.Button(toolbar, text="Redo", command=self.redo)
         self.redo_button.pack(side="left", padx=(6, 0))
         ttk.Button(toolbar, text="Reset", command=self.reset).pack(side="left", padx=(6, 0))
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Label(toolbar, text="Zoom:").pack(side="left")
+        zoom_control = ttk.Combobox(
+            toolbar,
+            textvariable=self.zoom_value,
+            values=("Fit", "50%", "100%", "150%", "200%", "300%"),
+            state="readonly",
+            width=6,
+        )
+        zoom_control.pack(side="left", padx=(4, 0))
+        zoom_control.bind("<<ComboboxSelected>>", self._change_zoom)
 
         body = ttk.Panedwindow(container, orient="horizontal")
         body.pack(fill="both", expand=True)
@@ -90,11 +102,28 @@ class MainWindow:
         ttk.Label(sidebar, text="Forensics tools", style="Title.TLabel", background="#eef1f5").pack(
             anchor="w", pady=(0, 12)
         )
+        tool_area = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        tool_area.pack(fill="both", expand=True)
+        tool_canvas = tk.Canvas(tool_area, background="#eef1f5", highlightthickness=0)
+        tool_scrollbar = ttk.Scrollbar(tool_area, orient="vertical", command=tool_canvas.yview)
+        tool_canvas.configure(yscrollcommand=tool_scrollbar.set)
+        tool_scrollbar.pack(side="right", fill="y")
+        tool_canvas.pack(side="left", fill="both", expand=True)
+        tool_list = ttk.Frame(tool_canvas, style="Sidebar.TFrame")
+        tool_window = tool_canvas.create_window((0, 0), window=tool_list, anchor="nw")
+        tool_list.bind(
+            "<Configure>",
+            lambda _event: tool_canvas.configure(scrollregion=tool_canvas.bbox("all")),
+        )
+        tool_canvas.bind(
+            "<Configure>",
+            lambda event: tool_canvas.itemconfigure(tool_window, width=event.width),
+        )
         for category, tools in self.registry.categories():
-            ttk.Label(sidebar, text=category, style="Category.TLabel").pack(anchor="w", pady=(9, 4))
+            ttk.Label(tool_list, text=category, style="Category.TLabel").pack(anchor="w", pady=(9, 4))
             for tool in tools:
                 button = ttk.Button(
-                    sidebar,
+                    tool_list,
                     text=tool.title,
                     style="Tool.TButton",
                     command=lambda selected=tool: self.run_tool(selected),
@@ -124,6 +153,10 @@ class MainWindow:
         self.root.bind_all("<Control-Shift-S>", lambda _event: self.save_image())
         self.root.bind_all("<Control-z>", lambda _event: self.undo())
         self.root.bind_all("<Control-y>", lambda _event: self.redo())
+
+    def _change_zoom(self, _event: tk.Event) -> None:
+        value = self.zoom_value.get()
+        self.image_view.set_zoom(None if value == "Fit" else int(value[:-1]) / 100)
 
     def open_image(self) -> None:
         filename = filedialog.askopenfilename(title="Open evidence image", filetypes=OPEN_TYPES)

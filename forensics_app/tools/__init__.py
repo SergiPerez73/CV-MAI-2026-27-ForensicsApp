@@ -9,10 +9,14 @@ from .edge_visualization import EdgeVisualizationTool
 from .filters import FiltersTool
 from .grayscale import GrayscaleTool
 from .histogram import HistogramTool
+from .hog import HOGTool
 from .image_sharpening import ImageSharpeningTool
 from .image_info import ImageInfoTool
 from .masking import MaskingTool
+from .normalized_cross_correlation import NormalizedCrossCorrelationTool
+from .person_detection import PersonDetectionTool
 from .registry import ToolRegistry
+from .template_matching import TemplateMatchingTool
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -30,6 +34,10 @@ def build_tool_registry() -> ToolRegistry:
             FiltersTool(),
             EdgeVisualizationTool(),
             ImageSharpeningTool(),
+            NormalizedCrossCorrelationTool(),
+            TemplateMatchingTool(),
+            HOGTool(),
+            PersonDetectionTool(),
         ]
     )
 
@@ -45,6 +53,10 @@ __all__ = [
     "EdgeVisualizationTool",
     "FiltersTool",
     "HistogramTool",
+    "HOGTool",
     "ImageSharpeningTool",
     "MaskingTool",
+    "NormalizedCrossCorrelationTool",
+    "PersonDetectionTool",
+    "TemplateMatchingTool",
 ]
