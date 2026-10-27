@@ -8,9 +8,9 @@ import numpy as np
 from PIL import Image
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import CHANNELS
-from .utils import choose_channel
+from ..base import ForensicsTool, ToolResult
+from ..constants import CHANNELS
+from ..utils import choose_channel
 
 
 class ChannelSplitTool(ForensicsTool):

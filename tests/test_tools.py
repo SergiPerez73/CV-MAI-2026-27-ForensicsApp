@@ -1,27 +1,34 @@
 import unittest
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 from PIL import Image
 
 from forensics_app.core import ImageDocument
-from forensics_app.tools.channel_split import ChannelSplitTool
-from forensics_app.tools.channel_swap import ChannelSwapTool
-from forensics_app.tools.canny_edge_detection import CannyEdgeDetectionTool, CannySettings
-from forensics_app.tools.contrast_enhancement import ContrastEnhancementTool
-from forensics_app.tools.convolution import ConvolutionTool, ConvolutionSettings
-from forensics_app.tools.edge_visualization import EdgeVisualizationTool, EdgeVisualizationSettings
-from forensics_app.tools.grayscale import GrayscaleTool
-from forensics_app.tools.filters import FiltersTool, FilterSettings
-from forensics_app.tools.histogram import HistogramTool
-from forensics_app.tools.hog import HOGSettings, HOGTool
-from forensics_app.tools.image_sharpening import ImageSharpeningTool, SharpeningSettings
-from forensics_app.tools.image_info import ImageInfoTool
+from forensics_app.tools import build_tool_registry
+from forensics_app.tools.set2.channel_split import ChannelSplitTool
+from forensics_app.tools.set2.channel_swap import ChannelSwapTool
+from forensics_app.tools.set3.canny_edge_detection import CannyEdgeDetectionTool, CannySettings
+from forensics_app.tools.set5.closest_image_lookup import ClosestImageLookupTool
+from forensics_app.tools.set5.corner_detection import CornerDetectionTool, CornerSettings
+from forensics_app.tools.set2.contrast_enhancement import ContrastEnhancementTool
+from forensics_app.tools.set3.convolution import ConvolutionTool, ConvolutionSettings
+from forensics_app.tools.set3.edge_visualization import EdgeVisualizationTool, EdgeVisualizationSettings
+from forensics_app.tools.set5.utils import DescriptorSettings, MatchingSettings, extract_features, match_features
+from forensics_app.tools.set1.grayscale import GrayscaleTool
+from forensics_app.tools.set3.filters import FiltersTool, FilterSettings
+from forensics_app.tools.set2.histogram import HistogramTool
+from forensics_app.tools.set4.hog import HOGSettings, HOGTool
+from forensics_app.tools.set3.image_sharpening import ImageSharpeningTool, SharpeningSettings
+from forensics_app.tools.set1.image_info import ImageInfoTool
+from forensics_app.tools.set5.image_matching import ImageMatchingTool
+from forensics_app.tools.set5.keypoint_descriptors import KeypointDescriptorsTool
 from forensics_app.tools.registry import ToolRegistry
-from forensics_app.tools.masking import MaskingTool, MaskingSettings
-from forensics_app.tools.normalized_cross_correlation import NormalizedCrossCorrelationTool
-from forensics_app.tools.person_detection import PersonDetectionSettings, PersonDetectionTool
-from forensics_app.tools.template_matching import TemplateMatchingSettings, TemplateMatchingTool
+from forensics_app.tools.set2.masking import MaskingTool, MaskingSettings
+from forensics_app.tools.set4.normalized_cross_correlation import NormalizedCrossCorrelationTool
+from forensics_app.tools.set4.person_detection import PersonDetectionSettings, PersonDetectionTool
+from forensics_app.tools.set4.template_matching import TemplateMatchingSettings, TemplateMatchingTool
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -118,15 +125,15 @@ class DialogHelperTests(unittest.TestCase):
 
 class ToolTests(unittest.TestCase):
     @patch(
-        "forensics_app.tools.person_detection.choose_person_detection",
+        "forensics_app.tools.set4.person_detection.choose_person_detection",
         return_value=PersonDetectionSettings(9, 8, 3, "dot_product"),
     )
     @patch(
-        "forensics_app.tools.person_detection.filedialog.askopenfilename",
+        "forensics_app.tools.set4.person_detection.filedialog.askopenfilename",
         return_value="person.png",
     )
-    @patch("forensics_app.tools.person_detection.Image.open")
-    @patch("forensics_app.tools.person_detection.feature.hog")
+    @patch("forensics_app.tools.set4.person_detection.Image.open")
+    @patch("forensics_app.tools.set4.person_detection.feature.hog")
     def test_person_detection_uses_selected_hog_settings_and_metric(
         self, hog, open_image, _choose_file, _choose_settings
     ) -> None:
@@ -158,10 +165,10 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Location"], "8, 8")
 
     @patch(
-        "forensics_app.tools.hog.choose_hog",
+        "forensics_app.tools.set4.hog.choose_hog",
         return_value=HOGSettings(9, 8, 3),
     )
-    @patch("forensics_app.tools.hog.feature.hog")
+    @patch("forensics_app.tools.set4.hog.feature.hog")
     def test_hog_uses_selected_configuration_and_returns_visualization(
         self, hog, _choose_hog
     ) -> None:
@@ -182,16 +189,16 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Orientations"], 9)
 
     @patch(
-        "forensics_app.tools.template_matching.choose_template_matching",
+        "forensics_app.tools.set4.template_matching.choose_template_matching",
         return_value=TemplateMatchingSettings(45.0, 0.8),
     )
     @patch(
-        "forensics_app.tools.template_matching.filedialog.askopenfilename",
+        "forensics_app.tools.set4.template_matching.filedialog.askopenfilename",
         return_value="template.png",
     )
-    @patch("forensics_app.tools.template_matching.Image.open")
-    @patch("forensics_app.tools.template_matching.transform.rotate")
-    @patch("forensics_app.tools.template_matching.feature.match_template")
+    @patch("forensics_app.tools.set4.template_matching.Image.open")
+    @patch("forensics_app.tools.set4.template_matching.transform.rotate")
+    @patch("forensics_app.tools.set4.template_matching.feature.match_template")
     def test_template_matching_rotates_template_and_uses_selected_threshold(
         self, match_template, rotate, open_image, _choose_file, _choose_settings
     ) -> None:
@@ -214,11 +221,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Threshold"], 0.8)
 
     @patch(
-        "forensics_app.tools.normalized_cross_correlation.filedialog.askopenfilename",
+        "forensics_app.tools.set4.normalized_cross_correlation.filedialog.askopenfilename",
         return_value="template.png",
     )
-    @patch("forensics_app.tools.normalized_cross_correlation.Image.open")
-    @patch("forensics_app.tools.normalized_cross_correlation.feature.match_template")
+    @patch("forensics_app.tools.set4.normalized_cross_correlation.Image.open")
+    @patch("forensics_app.tools.set4.normalized_cross_correlation.feature.match_template")
     def test_normalized_cross_correlation_returns_response_map(
         self, match_template, open_image, _choose_file
     ) -> None:
@@ -242,10 +249,10 @@ class ToolTests(unittest.TestCase):
         self.assertNotIn("Threshold", result.details)
 
     @patch(
-        "forensics_app.tools.image_sharpening.choose_sharpening",
+        "forensics_app.tools.set3.image_sharpening.choose_sharpening",
         return_value=SharpeningSettings(2.0, 1.5),
     )
-    @patch("forensics_app.tools.image_sharpening.filters.unsharp_mask")
+    @patch("forensics_app.tools.set3.image_sharpening.filters.unsharp_mask")
     def test_image_sharpening_uses_selected_radius_and_amount(
         self, unsharp_mask, _choose_sharpening
     ) -> None:
@@ -266,11 +273,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Amount"], 1.5)
 
     @patch(
-        "forensics_app.tools.edge_visualization.choose_edge_visualization",
+        "forensics_app.tools.set3.edge_visualization.choose_edge_visualization",
         return_value=EdgeVisualizationSettings(2.0, 0.1, 0.2, 2.0),
     )
     @patch(
-        "forensics_app.tools.edge_visualization.feature.canny",
+        "forensics_app.tools.set3.edge_visualization.feature.canny",
         return_value=np.array(
             [[False, False, False], [False, True, False], [False, False, False]]
         ),
@@ -288,11 +295,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Contour width"], 2.0)
 
     @patch(
-        "forensics_app.tools.canny_edge_detection.choose_canny",
+        "forensics_app.tools.set3.canny_edge_detection.choose_canny",
         return_value=CannySettings(2.0, 0.1, 0.2),
     )
     @patch(
-        "forensics_app.tools.canny_edge_detection.feature.canny",
+        "forensics_app.tools.set3.canny_edge_detection.feature.canny",
         return_value=np.array([[False, True]]),
     )
     def test_canny_uses_selected_parameters_and_returns_binary_edges(
@@ -323,7 +330,7 @@ class ToolTests(unittest.TestCase):
             with self.subTest(filter=name):
                 settings = FilterSettings(name, 2.0)
                 with patch(
-                    "forensics_app.tools.filters.choose_filter",
+                    "forensics_app.tools.set3.filters.choose_filter",
                     return_value=settings,
                 ):
                     result = FiltersTool().run(None, document)
@@ -337,12 +344,12 @@ class ToolTests(unittest.TestCase):
                 }[name])
 
         with patch(
-            "forensics_app.tools.filters.choose_filter",
+            "forensics_app.tools.set3.filters.choose_filter",
             return_value=FilterSettings("gaussian", 0.5),
         ):
             low_sigma = FiltersTool().run(None, document)
         with patch(
-            "forensics_app.tools.filters.choose_filter",
+            "forensics_app.tools.set3.filters.choose_filter",
             return_value=FilterSettings("gaussian", 2.0),
         ):
             high_sigma = FiltersTool().run(None, document)
@@ -362,7 +369,7 @@ class ToolTests(unittest.TestCase):
         ):
             with self.subTest(direction=direction):
                 with patch(
-                    "forensics_app.tools.convolution.choose_convolution",
+                    "forensics_app.tools.set3.convolution.choose_convolution",
                     return_value=ConvolutionSettings(3, direction),
                 ):
                     result = ConvolutionTool().run(None, document)
@@ -379,7 +386,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.image.mode, "L")
         self.assertEqual(document.current.mode, "RGB")
 
-    @patch("forensics_app.tools.channel_split.choose_channel", return_value="Green")
+    @patch("forensics_app.tools.set2.channel_split.choose_channel", return_value="Green")
     def test_channel_split_extracts_selected_channel_without_mutating_document(self, _choose_channel) -> None:
         document = ImageDocument()
         document.current = Image.new("RGB", (1, 1), (12, 128, 240))
@@ -391,14 +398,14 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Channel"], "Green")
         self.assertEqual(document.current.mode, "RGB")
 
-    @patch("forensics_app.tools.channel_split.choose_channel", return_value=None)
+    @patch("forensics_app.tools.set2.channel_split.choose_channel", return_value=None)
     def test_channel_split_returns_none_when_cancelled(self, _choose_channel) -> None:
         document = ImageDocument()
         document.current = Image.new("RGB", (1, 1), "red")
 
         self.assertIsNone(ChannelSplitTool().run(None, document))
 
-    @patch("forensics_app.tools.channel_split.choose_channel", return_value="Blue")
+    @patch("forensics_app.tools.set2.channel_split.choose_channel", return_value="Blue")
     def test_channel_split_accepts_grayscale_image(self, _choose_channel) -> None:
         document = ImageDocument()
         document.current = Image.new("L", (1, 1), 73)
@@ -409,7 +416,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.image.getpixel((0, 0)), 73)
 
     @patch(
-        "forensics_app.tools.channel_swap.choose_channel",
+        "forensics_app.tools.set2.channel_swap.choose_channel",
         side_effect=["Red", "Blue"],
     )
     def test_channel_swap_swaps_selected_rgb_channels(self, _askstring) -> None:
@@ -423,7 +430,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(document.current.getpixel((0, 0)), (10, 20, 30))
 
     @patch(
-        "forensics_app.tools.channel_swap.choose_channel",
+        "forensics_app.tools.set2.channel_swap.choose_channel",
         side_effect=["Green", "Red"],
     )
     def test_channel_swap_preserves_alpha(self, _askstring) -> None:
@@ -434,7 +441,7 @@ class ToolTests(unittest.TestCase):
 
         self.assertEqual(result.image.getpixel((0, 0)), (20, 10, 30, 40))
 
-    @patch("forensics_app.tools.channel_swap.choose_channel", side_effect=["Red", "Blue"])
+    @patch("forensics_app.tools.set2.channel_swap.choose_channel", side_effect=["Red", "Blue"])
     def test_channel_swap_accepts_grayscale_image(self, _choose_channel) -> None:
         document = ImageDocument()
         document.current = Image.new("L", (1, 1), 73)
@@ -445,7 +452,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.image.getpixel((0, 0)), (73, 73, 73))
 
     @patch(
-        "forensics_app.tools.channel_swap.choose_channel",
+        "forensics_app.tools.set2.channel_swap.choose_channel",
         side_effect=["Red", "Red"],
     )
     def test_channel_swap_rejects_same_channel_twice(self, _askstring) -> None:
@@ -455,11 +462,11 @@ class ToolTests(unittest.TestCase):
         self.assertIsNone(ChannelSwapTool().run(None, document))
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(True, True, False, 135),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_composites_binary_foreground_over_current_image(
         self, open_image, _choose_file, _choose_masking
     ) -> None:
@@ -478,11 +485,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Foreground"], "foreground.png")
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(False, True, False, 135),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_preserves_selected_foreground_pixels(
         self, open_image, _choose_file, _choose_masking
     ) -> None:
@@ -502,11 +509,11 @@ class ToolTests(unittest.TestCase):
         )
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(False, True, False, 135),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_shows_grayscale_background_through_transparent_pixels(
         self, open_image, _choose_file, _choose_masking
     ) -> None:
@@ -525,11 +532,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(list(result.image.getdata()), [(10, 10, 10), (200, 200, 200)])
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(False, False, False, 135),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_can_keep_dark_foreground_pixels(
         self, open_image, _choose_file, _choose_masking
     ) -> None:
@@ -549,11 +556,11 @@ class ToolTests(unittest.TestCase):
         )
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(False, True, False, 200),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_uses_selected_threshold(self, open_image, _choose_file, _choose_masking) -> None:
         document = ImageDocument()
         document.current = Image.new("RGB", (4, 1), "blue")
@@ -572,11 +579,11 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.details["Threshold"], 200)
 
     @patch(
-        "forensics_app.tools.masking.choose_masking",
+        "forensics_app.tools.set2.masking.choose_masking",
         return_value=MaskingSettings(False, True, False, 135, True),
     )
-    @patch("forensics_app.tools.masking.filedialog.askopenfilename", return_value="foreground.png")
-    @patch("forensics_app.tools.masking.Image.open")
+    @patch("forensics_app.tools.set2.masking.filedialog.askopenfilename", return_value="foreground.png")
+    @patch("forensics_app.tools.set2.masking.Image.open")
     def test_masking_can_select_foreground_pixels_from_background_brightness(
         self, open_image, _choose_file, _choose_masking
     ) -> None:
@@ -601,34 +608,16 @@ class ToolTests(unittest.TestCase):
             ToolRegistry([GrayscaleTool(), GrayscaleTool()])
 
     def test_registry_groups_tools_into_course_sets(self) -> None:
-        registry = ToolRegistry(
-            [
-                GrayscaleTool(),
-                ImageInfoTool(),
-                ChannelSplitTool(),
-                ChannelSwapTool(),
-                MaskingTool(),
-                HistogramTool(),
-                ContrastEnhancementTool(),
-                CannyEdgeDetectionTool(),
-                ConvolutionTool(),
-                FiltersTool(),
-                EdgeVisualizationTool(),
-                ImageSharpeningTool(),
-                NormalizedCrossCorrelationTool(),
-                TemplateMatchingTool(),
-                HOGTool(),
-                PersonDetectionTool(),
-            ]
-        )
+        registry = build_tool_registry()
 
         self.assertEqual(
             tuple((category, tuple(tool.tool_id for tool in tools)) for category, tools in registry.categories()),
             (
-                ("Set 1", ("grayscale", "image_info")),
-                ("Set 2", ("channel_split", "channel_swap", "masking", "histogram", "contrast_enhancement")),
-                ("Set 3", ("canny_edge_detection", "convolution", "filters", "edge_visualization", "image_sharpening")),
+                ("Set 5", ("corner_detection", "keypoint_descriptors", "image_matching", "closest_image_lookup")),
                 ("Set 4", ("normalized_cross_correlation", "template_matching", "hog", "person_detection")),
+                ("Set 3", ("canny_edge_detection", "convolution", "filters", "edge_visualization", "image_sharpening")),
+                ("Set 2", ("channel_split", "channel_swap", "masking", "histogram", "contrast_enhancement")),
+                ("Set 1", ("grayscale", "image_info")),
             ),
         )
 
@@ -676,7 +665,7 @@ class ToolTests(unittest.TestCase):
         ):
             with self.subTest(method=method):
                 with patch(
-                    "forensics_app.tools.contrast_enhancement.choose_option",
+                    "forensics_app.tools.set2.contrast_enhancement.choose_option",
                     return_value=method,
                 ):
                     result = ContrastEnhancementTool().run(None, document)
@@ -696,7 +685,7 @@ class ToolTests(unittest.TestCase):
         for method in ("low_contrast", "stretch", "equalize", "clahe"):
             with self.subTest(method=method):
                 with patch(
-                    "forensics_app.tools.contrast_enhancement.choose_option",
+                    "forensics_app.tools.set2.contrast_enhancement.choose_option",
                     return_value=method,
                 ):
                     result = ContrastEnhancementTool().run(None, document)
@@ -705,6 +694,140 @@ class ToolTests(unittest.TestCase):
                 self.assertEqual(result.image.mode, "RGB")
                 self.assertGreater(len(set(pixel)), 1)
                 self.assertEqual(document.current.getpixel((8, 8)), (136, 119, 132))
+
+    @patch("forensics_app.tools.set5.utils.feature.ORB")
+    def test_feature_extraction_accepts_grayscale_and_rgba_images(self, create_descriptor) -> None:
+        grayscale = Image.new("L", (2, 1), 128)
+        rgba = Image.new("RGBA", (2, 1), (255, 0, 0, 50))
+        descriptor = MagicMock()
+        descriptor.keypoints = np.empty((0, 2))
+        descriptor.descriptors = np.empty((0, 256))
+        create_descriptor.return_value = descriptor
+        settings = DescriptorSettings("orb", 200, 3, 3, 1.6)
+
+        extract_features(grayscale, settings)
+        extract_features(rgba, settings)
+
+        grayscale_array = descriptor.detect_and_extract.call_args_list[0].args[0]
+        rgba_array = descriptor.detect_and_extract.call_args_list[1].args[0]
+        self.assertEqual(grayscale_array.shape, (1, 2))
+        self.assertEqual(rgba_array.shape, (1, 2))
+        self.assertEqual(grayscale_array.tolist(), [[128, 128]])
+
+    @patch("forensics_app.tools.set5.utils.feature.match_descriptors")
+    def test_feature_matching_selects_metric_for_descriptor_algorithm(self, match_descriptors) -> None:
+        descriptors = np.array([[0, 1], [1, 0]])
+        matching = MatchingSettings(True, 0.8)
+
+        match_features(descriptors, descriptors, DescriptorSettings("orb", 200, 3, 3, 1.6), matching)
+        self.assertEqual(match_descriptors.call_args.kwargs["metric"], "hamming")
+
+        match_features(descriptors, descriptors, DescriptorSettings("sift", 200, 3, 3, 1.6), matching)
+        self.assertEqual(match_descriptors.call_args.kwargs["metric"], "euclidean")
+
+    @patch(
+        "forensics_app.tools.set5.corner_detection.choose_corner_detection",
+        return_value=CornerSettings("harris", 0.25),
+    )
+    @patch("forensics_app.tools.set5.corner_detection.feature.corner_peaks", return_value=np.array([[1, 2]]))
+    @patch("forensics_app.tools.set5.corner_detection.feature.corner_harris", return_value=np.ones((3, 4)))
+    def test_corner_detection_uses_selected_detector_and_peak_threshold(
+        self, corner_harris, corner_peaks, _choose_corner_detection
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("L", (4, 3), 128)
+
+        result = CornerDetectionTool().run(None, document)
+
+        self.assertEqual(corner_harris.call_args.args[0].shape, (3, 4))
+        self.assertEqual(corner_peaks.call_args.kwargs, {"threshold_rel": 0.25})
+        self.assertEqual(result.details["Corners"], 1)
+        self.assertEqual(result.image.mode, "RGB")
+
+    @patch(
+        "forensics_app.tools.set5.corner_detection.choose_corner_detection",
+        return_value=CornerSettings("fast", 0.25, "response"),
+    )
+    @patch("forensics_app.tools.set5.corner_detection.render_response", return_value=Image.new("RGB", (4, 3)))
+    @patch("forensics_app.tools.set5.corner_detection.feature.corner_peaks")
+    @patch("forensics_app.tools.set5.corner_detection.feature.corner_fast", return_value=np.ones((3, 4)))
+    def test_corner_detection_can_return_raw_detector_response(
+        self, corner_fast, corner_peaks, _render_response, _choose_corner_detection
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (4, 3), "white")
+
+        result = CornerDetectionTool().run(None, document)
+
+        self.assertEqual(corner_fast.call_args.args[0].shape, (3, 4))
+        corner_peaks.assert_not_called()
+        self.assertEqual(result.details["Operation"], "FAST corner response")
+
+    @patch("forensics_app.tools.set5.image_matching.render_matches", return_value=Image.new("RGB", (4, 2)))
+    @patch("forensics_app.tools.set5.image_matching.match_features", return_value=np.array([[0, 0]]))
+    @patch(
+        "forensics_app.tools.set5.image_matching.extract_features",
+        side_effect=[(np.array([[0, 0]]), np.array([[1, 0]])), (np.array([[0, 0]]), np.array([[1, 0]]))],
+    )
+    @patch(
+        "forensics_app.tools.set5.image_matching.choose_matching_settings",
+        return_value=MatchingSettings(True, 0.8),
+    )
+    @patch(
+        "forensics_app.tools.set5.image_matching.choose_descriptor_settings",
+        return_value=DescriptorSettings("orb", 200, 3, 3, 1.6),
+    )
+    @patch("forensics_app.tools.set5.image_matching.filedialog.askopenfilename", return_value="second.png")
+    @patch("forensics_app.tools.set5.image_matching.Image.open")
+    def test_image_matching_reports_second_image_match_count(
+        self, open_image, _choose_file, _choose_descriptor, _choose_matching, _extract, _match, _render
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (2, 2), "white")
+        source = MagicMock()
+        source.__enter__.return_value = Image.new("L", (2, 2), 128)
+        open_image.return_value = source
+
+        result = ImageMatchingTool().run(None, document)
+
+        self.assertEqual(result.details["Second image"], "second.png")
+        self.assertEqual(result.details["Matches"], 1)
+
+    @patch("forensics_app.tools.set5.closest_image_lookup.render_matches", return_value=Image.new("RGB", (4, 2)))
+    @patch(
+        "forensics_app.tools.set5.closest_image_lookup.match_features",
+        side_effect=[np.array([[0, 0]]), np.array([[0, 0], [1, 1]])],
+    )
+    @patch(
+        "forensics_app.tools.set5.closest_image_lookup.extract_features",
+        side_effect=[
+            (np.array([[0, 0]]), np.array([[1, 0]])),
+            (np.array([[0, 0]]), np.array([[1, 0]])),
+            (np.array([[0, 0]]), np.array([[1, 0]])),
+        ],
+    )
+    @patch(
+        "forensics_app.tools.set5.closest_image_lookup.choose_matching_settings",
+        return_value=MatchingSettings(True, 0.8),
+    )
+    @patch(
+        "forensics_app.tools.set5.closest_image_lookup.choose_descriptor_settings",
+        return_value=DescriptorSettings("orb", 200, 3, 3, 1.6),
+    )
+    def test_closest_image_lookup_selects_candidate_with_most_matches(
+        self, _choose_descriptor, _choose_matching, _extract, _match, _render
+    ) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (2, 2), "white")
+        with TemporaryDirectory() as directory:
+            Image.new("RGB", (2, 2), "red").save(f"{directory}/first.png")
+            Image.new("RGB", (2, 2), "blue").save(f"{directory}/second.png")
+            with patch("forensics_app.tools.set5.closest_image_lookup.filedialog.askdirectory", return_value=directory):
+                result = ClosestImageLookupTool().run(None, document)
+
+        self.assertEqual(result.details["Closest image"], "second.png")
+        self.assertEqual(result.details["Matches"], 2)
+        self.assertEqual(result.details["Candidates examined"], 2)
 
 
 if __name__ == "__main__":

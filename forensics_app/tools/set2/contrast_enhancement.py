@@ -11,9 +11,9 @@ from skimage.color import lab2rgb, rgb2lab
 from skimage.util import img_as_float, img_as_ubyte
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import CONTRAST_OPTIONS
-from .utils import choose_option
+from ..base import ForensicsTool, ToolResult
+from ..constants import CONTRAST_OPTIONS
+from ..utils import choose_option
 
 
 class ContrastEnhancementTool(ForensicsTool):

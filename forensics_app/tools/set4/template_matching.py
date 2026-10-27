@@ -8,15 +8,14 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 import numpy as np
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 from skimage import color, feature, transform
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import OPEN_TYPES
-from .utils import add_dialog_buttons, add_numeric_field, create_dialog, wait_for_dialog
+from ..base import ForensicsTool, ToolResult
+from ..constants import OPEN_TYPES
+from ..utils import add_dialog_buttons, add_numeric_field, create_dialog, figure_to_image, wait_for_dialog
 
 
 @dataclass(frozen=True)
@@ -87,9 +86,7 @@ class TemplateMatchingTool(ForensicsTool):
 		axis.imshow(image * 0.4, cmap="gray")
 		axis.plot(x_coords, y_coords, "r.", markersize=6)
 		axis.axis("off")
-		canvas = FigureCanvasAgg(figure)
-		canvas.draw()
-		output_image = Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
+		output_image = figure_to_image(figure)
 
 		return ToolResult(
 			image=output_image,

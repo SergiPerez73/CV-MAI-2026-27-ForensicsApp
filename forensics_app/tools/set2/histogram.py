@@ -7,7 +7,7 @@ import tkinter as tk
 from PIL import Image, ImageDraw
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
+from ..base import ForensicsTool, ToolResult
 
 
 class HistogramTool(ForensicsTool):

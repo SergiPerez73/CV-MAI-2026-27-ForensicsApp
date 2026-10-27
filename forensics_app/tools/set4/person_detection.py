@@ -8,16 +8,15 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 import numpy as np
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from PIL import Image
 from skimage import feature
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import OPEN_TYPES
-from .utils import add_dialog_buttons, add_numeric_field, create_dialog, wait_for_dialog
+from ..base import ForensicsTool, ToolResult
+from ..constants import OPEN_TYPES
+from ..utils import add_dialog_buttons, add_numeric_field, create_dialog, figure_to_image, wait_for_dialog
 
 
 STEP_SIZE = 8
@@ -132,9 +131,7 @@ class PersonDetectionTool(ForensicsTool):
 			Rectangle((x_coord, y_coord), template_width, template_height, fill=False, linewidth=2, edgecolor="red")
 		)
 		axis.set_axis_off()
-		canvas = FigureCanvasAgg(figure)
-		canvas.draw()
-		output_image = Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
+		output_image = figure_to_image(figure)
 
 		return ToolResult(
 			image=output_image,

@@ -7,14 +7,14 @@ import tkinter as tk
 from tkinter import filedialog
 
 import numpy as np
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
 from skimage import color, feature
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import OPEN_TYPES
+from ..base import ForensicsTool, ToolResult
+from ..constants import OPEN_TYPES
+from ..utils import figure_to_image
 
 
 class NormalizedCrossCorrelationTool(ForensicsTool):
@@ -48,9 +48,7 @@ class NormalizedCrossCorrelationTool(ForensicsTool):
 
 		axis.imshow(corr_tmpl, cmap="gray")
 		axis.axis("off")
-		canvas = FigureCanvasAgg(figure)
-		canvas.draw()
-		output_image = Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
+		output_image = figure_to_image(figure)
 
 		details = {
 			"Operation": "Normalized cross-correlation image",

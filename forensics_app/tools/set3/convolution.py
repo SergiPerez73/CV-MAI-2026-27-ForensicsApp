@@ -11,8 +11,8 @@ from PIL import Image
 from scipy import ndimage
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .utils import add_dialog_buttons, create_dialog, wait_for_dialog
+from ..base import ForensicsTool, ToolResult
+from ..utils import add_dialog_buttons, create_dialog, wait_for_dialog
 
 
 @dataclass(frozen=True)

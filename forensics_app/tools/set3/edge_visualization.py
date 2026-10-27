@@ -7,14 +7,12 @@ import tkinter as tk
 from tkinter import ttk
 
 import numpy as np
-from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
-from PIL import Image
 from skimage import feature
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .utils import add_dialog_buttons, add_numeric_field, create_dialog, wait_for_dialog
+from ..base import ForensicsTool, ToolResult
+from ..utils import add_dialog_buttons, add_numeric_field, create_dialog, figure_to_image, wait_for_dialog
 
 
 @dataclass(frozen=True)
@@ -88,9 +86,7 @@ class EdgeVisualizationTool(ForensicsTool):
 		axis.imshow(image)
 		axis.contour(edges, colors="red", linewidths=settings.line_width)
 		axis.axis("off")
-		canvas = FigureCanvasAgg(figure)
-		canvas.draw()
-		output_image = Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
+		output_image = figure_to_image(figure)
 		return ToolResult(
 			image=output_image,
 			message="Displayed Canny edge contours over the original image.",

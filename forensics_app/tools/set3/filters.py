@@ -11,9 +11,9 @@ from PIL import Image
 from skimage import filters
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import FILTER_NAMES
-from .utils import add_dialog_buttons, create_dialog, wait_for_dialog
+from ..base import ForensicsTool, ToolResult
+from ..constants import FILTER_NAMES
+from ..utils import add_dialog_buttons, create_dialog, wait_for_dialog
 
 
 @dataclass(frozen=True)

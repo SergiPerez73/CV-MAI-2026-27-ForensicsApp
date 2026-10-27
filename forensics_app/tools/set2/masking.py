@@ -11,8 +11,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from forensics_app.core import ImageDocument
-from .base import ForensicsTool, ToolResult
-from .constants import (
+from ..base import ForensicsTool, ToolResult
+from ..constants import (
 	DEFAULT_BINARY,
 	DEFAULT_INVERT_IMAGE,
 	DEFAULT_KEEP_BRIGHT,
@@ -22,7 +22,7 @@ from .constants import (
 	MIN_THRESHOLD,
 	OPEN_TYPES,
 )
-from .utils import add_dialog_buttons, create_dialog, wait_for_dialog
+from ..utils import add_dialog_buttons, create_dialog, wait_for_dialog
 
 
 @dataclass(frozen=True)

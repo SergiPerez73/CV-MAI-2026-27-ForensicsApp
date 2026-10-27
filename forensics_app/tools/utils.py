@@ -4,6 +4,10 @@ from collections.abc import Callable
 import tkinter as tk
 from tkinter import ttk
 
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+from PIL import Image
+
 from .constants import CHANNELS
 
 
@@ -90,3 +94,10 @@ def choose_channel(
 		options={channel: channel for channel in CHANNELS},
 		disabled_options=excluded_channels,
 	)
+
+
+def figure_to_image(figure: Figure) -> Image.Image:
+	"""Render a Matplotlib figure as an RGB PIL image."""
+	canvas = FigureCanvasAgg(figure)
+	canvas.draw()
+	return Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
