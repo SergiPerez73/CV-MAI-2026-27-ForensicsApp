@@ -1,0 +1,1 @@
+"""Bag-of-visual-words tools for Set 7."""

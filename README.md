@@ -120,6 +120,116 @@ may be moved, provided its filenames and person folders are preserved.
 The vote share is not a calibrated confidence or an unknown-person rejection
 decision. No download is performed.
 
+## Set 7: Codebook construction
+
+Select **Set 7 > Codebook construction**; no open image is needed. Choose
+`sets/Set7_images/train`, containing `butterfly/`, `dalmatian/`, and `kangaroo/`.
+Only this training folder is read. The separate `test/` folder has the same
+three class subfolders and is reserved for subsequent histogram visualization
+and classification.
+
+The dataset uses a reproducible, per-class 80/20 split (random seed 42):
+
+| Class | Train | Test |
+| --- | ---: | ---: |
+| butterfly | 73 | 18 |
+| dalmatian | 54 | 13 |
+| kangaroo | 69 | 17 |
+
+The settings dialog uses these parameters:
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `words` | 10 | Number of visual words, K |
+| `pyramid_levels` | `(1, 4, 16)` | Number of crops at each level, giving 21 crops |
+| `step` | 8 | Dense grid spacing in pixels at each octave's resolution |
+| `sift_size` | 8 | SIFT spatial bin width in pixels at octave 0, scale 0 |
+| `n_octaves` | 3 | Number of Gaussian octaves |
+| `n_scales` | 3 | Scale layers per octave |
+| `sigma_min` | 1.6 | Base Gaussian blur |
+| `max_image_size` | 256 | Maximum resized image dimension |
+
+The SIFT parameter names `n_octaves`, `n_scales`, and `sigma_min` match Set 5.
+Unlike Set 5's detected keypoints, this tool uses an upright dense grid so
+`step` controls sampling. Images keep their aspect ratio and are never upscaled.
+The default K remains 10 rather than the PDF's `10 * number_of_classes` rule.
+
+Processing is separated into these functions:
+
+1. `prepare_image` converts to grayscale and resizes once.
+2. `split_pyramid` makes independent crops: the whole image, four quadrants,
+	and sixteen cells by default. Region counts must be perfect squares.
+3. `extract_sift` computes local 128-value SIFT descriptors within each crop,
+	using the configured grid, size, octaves, scales, and blur.
+4. `extract_pyramid_sift` runs extraction on every crop, retaining region order.
+5. `build_codebook` learns K centers from the training descriptors using MiniBatchKMeans.
+6. `compute_histograms` assigns each crop's descriptors to the nearest centers
+	and concatenates its K-bin word counts. Empty crops contribute K zeros.
+7. `extract_phow` encodes a new image using the same settings and learned centers.
+
+Thus `(1, 4, 16)` produces a `21 * K` image vector, or 210 values with K=10.
+Each individual SIFT descriptor still has 128 values. Histograms saved by
+codebook construction are raw counts, without normalization or level weighting.
+Classification is trained separately.
+
+Within each crop, bin width and Gaussian blur increase by
+`2 ** (octave + scale / n_scales)`. The grid step doubles per octave.
+OpenCV computes gradients in the explicitly selected Gaussian octave and layer.
+Scales that cannot fit their spatial bin centers inside a crop contribute no
+descriptors. OpenCV handles border samples within the wider interpolation support.
+
+Each cluster center is a visual word. The gallery adjusts to K and shows
+the training patch whose descriptor is closest to each center; the patches
+are representatives, not images reconstructed from descriptor coordinates.
+They show the nominal four-bin-wide region from the source pyramid crop,
+not the blurred Gaussian image or the full interpolation support.
+
+Each build saves `codebook.npz` in a new
+`sets/Set7_images/output_YYYYMMDD_HHMMSS_microseconds` folder. It contains the
+K-by-128 centroid matrix (`centers`), representative `patches`, `train_labels`,
+`train_paths`, and `train_histograms` with one `sum(pyramid_levels) * K` vector
+per training image. All extraction parameters from the table are saved, except
+`words`, which is given by the number of centers. The `descriptor_method` value
+`spatial_pyramid_dense_sift_v3` distinguishes this pipeline from older archives.
+Rebuild old codebooks before using them with this extractor. Test images are
+never used to learn the vocabulary or training histograms.
+OpenCV and scikit-learn provide extraction and learning. Joblib stores classifiers.
+
+## Set 7: Visual word histogram
+
+Open a test image, then select **Set 7 > Visual word histogram** and choose a
+saved visual-word model (`codebook.npz`). No image picker is shown. Extraction
+uses the settings saved in that codebook; outdated models must be rebuilt.
+
+The image output shows the opened image, a normalized K-bin histogram pooled
+across regions, and the complete normalized spatial-pyramid vector. With the
+default levels and K=10, the latter has 210 bins. Empty regions contribute zeros.
+The result replaces the current image in the main view. Use Undo to restore it.
+
+## Set 7: Predict class
+
+Open an image and select **Set 7 > Predict class**. Choose either:
+
+1. **Train and save classifier**: select a visual-word model, then a training
+	folder containing `butterfly/`, `dalmatian/`, and `kangaroo/`, and a destination
+	for the `.joblib` classifier. Each class needs at least two training images.
+	Only the selected training folders are read; test images are not used in fitting.
+2. **Load saved classifier**: select a previously saved `.joblib` file. No training
+	folder or separate visual-word model is needed. Only load files you created or
+	trust: joblib uses pickle and loading an untrusted file can execute Python code.
+
+Training extracts pyramid histograms using the selected codebook, applies L1
+normalization and an additive chi-squared feature map, then fits a class-balanced
+linear SVM with probability calibration. The saved classifier includes the
+codebook centers, extraction settings, normalization, feature map, and fitted SVM.
+Reusing it does not depend on the original codebook file or training image paths.
+
+Prediction shows the opened image and histograms with the highest-probability
+class and its estimated probability. All three probabilities appear in the
+tool details. The result replaces the current image in the main view, and Undo
+restores the previous image. Images producing no descriptors are
+rejected rather than classified from an empty feature vector.
+
 ## Course roadmap
 
 The shell is intentionally neutral about the algorithms. Possible tool modules  

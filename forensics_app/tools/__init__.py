@@ -23,12 +23,18 @@ from .set5.keypoint_descriptors import KeypointDescriptorsTool
 from .set6.face_detection import FaceDetectionTool
 from .set6.eigenface_builder import EigenfaceBuilderTool
 from .set6.face_recognition import FaceRecognitionTool
+from .set7.codebook import CodebookConstructionTool
+from .set7.histogram import VisualWordHistogramTool
+from .set7.classification import VisualWordPredictionTool
 from .registry import ToolRegistry
 
 
 def build_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
+            CodebookConstructionTool(),
+            VisualWordHistogramTool(),
+            VisualWordPredictionTool(),
             FaceDetectionTool(),
             EigenfaceBuilderTool(),
             FaceRecognitionTool(),
@@ -63,6 +69,9 @@ __all__ = [
     "ChannelSwapTool",
     "CannyEdgeDetectionTool",
     "ClosestImageLookupTool",
+    "CodebookConstructionTool",
+    "VisualWordHistogramTool",
+    "VisualWordPredictionTool",
     "CornerDetectionTool",
     "ContrastEnhancementTool",
     "ConvolutionTool",

@@ -1,8 +1,11 @@
 import unittest
+from dataclasses import asdict
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import cv2
 from PIL import Image
 
 from forensics_app.core import ImageDocument
@@ -30,6 +33,14 @@ from forensics_app.tools.set4.normalized_cross_correlation import NormalizedCros
 from forensics_app.tools.set4.person_detection import PersonDetectionSettings, PersonDetectionTool
 from forensics_app.tools.set4.template_matching import TemplateMatchingSettings, TemplateMatchingTool
 from forensics_app.tools.set6.face_detection import FaceDetectionSettings, FaceDetectionTool, detect_faces
+from forensics_app.tools.set7.codebook import (
+    CLASSES, CodebookConstructionTool, CodebookSettings, build_codebook, compute_histograms,
+    CodebookModel, extract_phow, extract_pyramid_sift, extract_sift, load_codebook, render_codebook, split_pyramid,
+)
+from forensics_app.tools.set7.histogram import VisualWordHistogramTool, render_histogram
+from forensics_app.tools.set7.classification import (
+    VisualWordClassifier, VisualWordPredictionTool, load_classifier, predict_image, save_classifier, train_classifier,
+)
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -37,6 +48,411 @@ from forensics_app.tools.utils import (
     create_dialog,
     wait_for_dialog,
 )
+
+
+class CodebookTests(unittest.TestCase):
+    def test_registered_without_requiring_an_image(self) -> None:
+        tools = dict(build_tool_registry().categories())["Set 7"]
+        self.assertTrue(any(isinstance(tool, CodebookConstructionTool) for tool in tools))
+        self.assertFalse(CodebookConstructionTool.requires_image)
+
+    def test_sift_uses_configured_dense_grid_octaves_and_scales(self) -> None:
+        pixels = np.random.default_rng(42).integers(0, 256, (64, 64), dtype=np.uint8)
+        settings = CodebookSettings(step=8, sift_size=4, n_octaves=2, n_scales=2)
+        keypoints, descriptors = extract_sift(pixels, settings)
+        self.assertEqual(descriptors.shape, (len(keypoints), 128))
+        self.assertEqual(descriptors.dtype, np.float32)
+        self.assertTrue(all(point.angle == 0 for point in keypoints))
+        self.assertEqual({point.octave for point in keypoints}, {0, 1, 1 << 8, 1 | (1 << 8)})
+        first_scale = [point for point in keypoints if point.octave == 0]
+        self.assertEqual({point.pt[0] for point in first_scale}, set(range(6, 58, 8)))
+        np.testing.assert_allclose([point.size for point in first_scale], 8 / 3)
+
+    def test_pyramid_splits_into_21_regions_without_losing_border_pixels(self) -> None:
+        image = np.arange(65 * 67).reshape(65, 67)
+        regions = split_pyramid(image, (1, 4, 16))
+        self.assertEqual(len(regions), 21)
+        np.testing.assert_array_equal(regions[0][0], image)
+        offset = 0
+        for count in (1, 4, 16):
+            reconstructed = np.zeros_like(image)
+            for region, (left, top) in regions[offset:offset + count]:
+                height, width = region.shape
+                reconstructed[top:top + height, left:left + width] = region
+            np.testing.assert_array_equal(reconstructed, image)
+            offset += count
+
+    @patch("forensics_app.tools.set7.codebook.extract_sift")
+    def test_sift_is_applied_independently_to_every_pyramid_region(self, sift) -> None:
+        sift.side_effect = lambda *_args: ([cv2.KeyPoint(2, 3, 4)], np.ones((1, 128), dtype=np.float32))
+        settings = CodebookSettings(pyramid_levels=(1, 4, 16), max_image_size=64)
+        gray, keypoints, descriptors = extract_pyramid_sift(Image.new("L", (128, 128)), settings)
+        self.assertEqual(gray.shape, (64, 64))
+        self.assertEqual(sift.call_count, 21)
+        self.assertEqual([call.args[0].shape for call in sift.call_args_list], [(64, 64)] + [(32, 32)] * 4 + [(16, 16)] * 16)
+        self.assertTrue(all(call.args[1] is settings for call in sift.call_args_list))
+        self.assertEqual(len(descriptors), 21)
+        self.assertEqual(keypoints[-1].pt, (50, 51))
+        self.assertEqual([point.class_id for point in keypoints], list(range(21)))
+
+    def test_histograms_use_nearest_words_and_preserve_region_order(self) -> None:
+        centers = np.array([[0, 0], [10, 10]], dtype=np.float32)
+        regions = [np.array([[1, 1], [9, 9], [8, 8]], dtype=np.float32), np.empty((0, 2))]
+        np.testing.assert_array_equal(compute_histograms(regions, centers), [1, 2, 0, 0])
+
+    def test_phow_dimensions_follow_pyramid_region_counts_and_k(self) -> None:
+        image = Image.fromarray(np.random.default_rng(42).integers(0, 256, (128, 128), dtype=np.uint8))
+        centers = np.random.default_rng(42).random((10, 128)).astype(np.float32)
+        for pyramid_levels, dimensions in (((1, 4, 16), 210), ((1, 4), 50), ((4,), 40)):
+            with self.subTest(pyramid_levels=pyramid_levels):
+                result = extract_phow(image, centers, CodebookSettings(pyramid_levels=pyramid_levels))
+                self.assertEqual(result.shape, (dimensions,))
+                self.assertEqual(result.dtype, np.float32)
+                self.assertTrue(np.all(result >= 0))
+                self.assertGreater(result.sum(), 0)
+
+    def test_codebook_uses_only_training_images_and_has_ten_words(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            random = np.random.default_rng(42)
+            for label in CLASSES:
+                (root / "train" / label).mkdir(parents=True)
+                (root / "test" / label).mkdir(parents=True)
+                for index in range(2):
+                    pixels = random.integers(0, 256, (48, 48), dtype=np.uint8)
+                    Image.fromarray(pixels).save(root / "train" / label / f"{index}.png")
+                (root / "test" / label / "not_read.png").touch()
+            model, patches, labels, paths, count, histograms = build_codebook(root / "train")
+            self.assertEqual(model.cluster_centers_.shape, (10, 128))
+            self.assertEqual(patches.shape, (10, 48, 48))
+            self.assertEqual(len(paths), 6)
+            self.assertEqual(set(labels), set(CLASSES))
+            self.assertTrue(all(Path(path).parent.parent.name == "train" for path in paths))
+            self.assertEqual(histograms.shape, (6, 210))
+            self.assertEqual(int(histograms.sum()), count)
+            self.assertGreater(count, 0)
+            self.assertGreater(render_codebook(patches).width, 0)
+            settings = CodebookSettings(words=3, step=4, sift_size=4, pyramid_levels=(1, 4), max_image_size=32)
+            custom_model, custom_patches, _, _, custom_count, custom_histograms = build_codebook(root / "train", settings)
+            self.assertEqual(custom_model.cluster_centers_.shape, (3, 128))
+            self.assertEqual(custom_patches.shape, (3, 48, 48))
+            self.assertEqual(custom_histograms.shape, (6, 15))
+            self.assertEqual(int(custom_histograms.sum()), custom_count)
+
+    @patch("forensics_app.tools.set7.codebook.filedialog.askdirectory", return_value="")
+    def test_cancel_returns_none(self, _choose) -> None:
+        self.assertIsNone(CodebookConstructionTool().run(None, ImageDocument()))
+
+    @patch("forensics_app.tools.set7.codebook.choose_codebook_settings", return_value=CodebookSettings(
+        words=3, step=4, sift_size=6, pyramid_levels=(1, 4), max_image_size=64,
+        sigma_min=1.2, n_octaves=2, n_scales=4,
+    ))
+    @patch("forensics_app.tools.set7.codebook.build_codebook")
+    @patch("forensics_app.tools.set7.codebook.filedialog.askdirectory", return_value="training")
+    def test_tool_saves_centers_and_phow_settings(self, _choose, build, _settings) -> None:
+        model = MagicMock()
+        model.cluster_centers_ = np.ones((3, 128), dtype=np.float32)
+        labels = np.array(CLASSES)
+        paths = np.array([f"training/{label}/image.png" for label in CLASSES])
+        build.return_value = model, np.zeros((3, 48, 48), dtype=np.uint8), labels, paths, 300, np.ones((3, 15))
+        with TemporaryDirectory() as name:
+            with patch("forensics_app.tools.set7.codebook.DEFAULT_DATA", Path(name)):
+                result = CodebookConstructionTool().run(None, ImageDocument())
+            build.assert_called_once_with(Path("training"), _settings.return_value)
+            self.assertEqual(result.details["Visual words (K)"], 3)
+            self.assertEqual(result.details["Training images"], 3)
+            self.assertEqual(result.details["Descriptors"], 300)
+            with np.load(result.details["Model"], allow_pickle=False) as archive:
+                np.testing.assert_array_equal(archive["centers"], model.cluster_centers_)
+                np.testing.assert_array_equal(archive["train_labels"], labels)
+                np.testing.assert_array_equal(archive["train_paths"], paths)
+                np.testing.assert_array_equal(archive["pyramid_levels"], [1, 4])
+                self.assertEqual(archive["train_histograms"].shape, (3, 15))
+                self.assertEqual(int(archive["sift_size"]), 6)
+                self.assertEqual(int(archive["step"]), 4)
+                self.assertEqual(int(archive["max_image_size"]), 64)
+                self.assertEqual(float(archive["sigma_min"]), 1.2)
+                self.assertEqual(int(archive["n_octaves"]), 2)
+                self.assertEqual(int(archive["n_scales"]), 4)
+                self.assertEqual(str(archive["descriptor_method"]), "spatial_pyramid_dense_sift_v3")
+
+    def test_custom_sift_settings_control_sampling_resize_and_blur(self) -> None:
+        image = Image.fromarray(np.random.default_rng(42).integers(0, 256, (128, 128), dtype=np.uint8))
+        settings = CodebookSettings(step=4, sift_size=4, pyramid_levels=(1,), max_image_size=32, sigma_min=1.2)
+        gray, keypoints, regions = extract_pyramid_sift(image, settings)
+        self.assertEqual(gray.shape, (32, 32))
+        self.assertEqual(regions[0].shape, (len(keypoints), 128))
+        _, _, other = extract_pyramid_sift(image, CodebookSettings(step=4, sift_size=4, pyramid_levels=(1,), max_image_size=32))
+        self.assertFalse(np.array_equal(regions[0], other[0]))
+
+    def test_dense_sift_uses_the_matching_gaussian_pyramid_layers(self) -> None:
+        pixels = np.random.default_rng(42).integers(0, 256, (96, 96), dtype=np.uint8)
+        keypoints, descriptors = extract_sift(pixels, CodebookSettings(n_octaves=2))
+        self.assertTrue(any(point.octave == (1 | (1 << 8)) for point in keypoints))
+        reference_points = [cv2.KeyPoint(*point.pt, point.size, 0, 0, point.octave) for point in keypoints]
+        _, reference = cv2.SIFT_create(nOctaveLayers=3, sigma=1.6).compute(pixels, reference_points)
+        np.testing.assert_array_equal(descriptors, reference)
+        wrong_points = [cv2.KeyPoint(*point.pt, point.size, 0) for point in keypoints]
+        _, wrong_layer = cv2.SIFT_create(nOctaveLayers=3, sigma=1.6).compute(pixels, wrong_points)
+        self.assertFalse(np.array_equal(descriptors, wrong_layer))
+
+    def test_small_regions_have_zero_histograms(self) -> None:
+        keypoints, descriptors = extract_sift(np.zeros((8, 8), dtype=np.uint8), CodebookSettings())
+        self.assertEqual(keypoints, [])
+        self.assertEqual(descriptors.shape, (0, 128))
+        histogram = extract_phow(Image.new("L", (8, 8)), np.zeros((10, 128)), CodebookSettings())
+        np.testing.assert_array_equal(histogram, np.zeros(210))
+
+    def test_scale_layers_control_dense_descriptors(self) -> None:
+        image = Image.fromarray(np.random.default_rng(42).integers(0, 256, (96, 96), dtype=np.uint8))
+        first_keypoints, _ = extract_sift(np.array(image), CodebookSettings(n_scales=3))
+        second_keypoints, _ = extract_sift(np.array(image), CodebookSettings(n_scales=5))
+        self.assertEqual({(point.octave >> 8) & 255 for point in first_keypoints}, {0, 1, 2})
+        self.assertEqual({(point.octave >> 8) & 255 for point in second_keypoints}, {0, 1, 2, 3, 4})
+
+    def test_invalid_codebook_settings_are_rejected(self) -> None:
+        for values in (
+            {"words": 0}, {"step": 0}, {"sift_size": 0}, {"pyramid_levels": ()},
+            {"pyramid_levels": (1, 3)}, {"pyramid_levels": (1, 1)}, {"pyramid_levels": (0,)},
+            {"max_image_size": 0}, {"sigma_min": 0}, {"sigma_min": float("nan")},
+            {"n_octaves": 0}, {"n_scales": 0},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                CodebookSettings(**values)
+
+    @patch("forensics_app.tools.set7.codebook.build_codebook")
+    @patch("forensics_app.tools.set7.codebook.choose_codebook_settings", return_value=None)
+    @patch("forensics_app.tools.set7.codebook.filedialog.askdirectory", return_value="training")
+    def test_cancel_settings_does_not_build(self, _folder, _settings, build) -> None:
+        self.assertIsNone(CodebookConstructionTool().run(None, ImageDocument()))
+        build.assert_not_called()
+
+    def test_custom_word_counts_render_all_patches(self) -> None:
+        for count in (1, 3, 12):
+            with self.subTest(count=count):
+                output = render_codebook(np.zeros((count, 48, 48), dtype=np.uint8))
+                self.assertEqual(output.width, 200 * min(5, count))
+                self.assertEqual(output.height, 225 * ((count + 4) // 5))
+
+
+class VisualWordHistogramTests(unittest.TestCase):
+    def test_load_codebook_preserves_extraction_settings(self) -> None:
+        settings = CodebookSettings(words=3, step=4, sift_size=4, pyramid_levels=(1, 4), n_octaves=2, n_scales=2)
+        centers = np.ones((3, 128), dtype=np.float32)
+        with TemporaryDirectory() as name:
+            path = Path(name) / "codebook.npz"
+            np.savez_compressed(path, centers=centers, descriptor_method="spatial_pyramid_dense_sift_v3", **asdict(settings))
+            model = load_codebook(path)
+        self.assertEqual(model.settings, settings)
+        np.testing.assert_array_equal(model.centers, centers)
+
+    def test_load_codebook_rejects_old_or_corrupt_models(self) -> None:
+        with TemporaryDirectory() as name:
+            path = Path(name) / "codebook.npz"
+            for values in (
+                {"centers": np.ones((3, 128))},
+                {"centers": np.ones((3, 128)), "descriptor_method": "opencv_dense_sift_bins_v2"},
+                {"centers": np.ones((3, 12)), "descriptor_method": "spatial_pyramid_dense_sift_v3", **asdict(CodebookSettings())},
+            ):
+                np.savez_compressed(path, **values)
+                with self.assertRaisesRegex(ValueError, "Rebuild"):
+                    load_codebook(path)
+
+    def test_codebook_rejects_nonfinite_centers(self) -> None:
+        with self.assertRaises(ValueError):
+            CodebookModel(np.full((10, 128), np.nan), CodebookSettings())
+
+    def test_render_handles_empty_histograms(self) -> None:
+        output = render_histogram(Image.new("L", (32, 32)), np.zeros(210), CodebookSettings())
+        self.assertEqual(output.size, (1000, 600))
+
+    @patch("forensics_app.tools.set7.histogram.choose_codebook", return_value="")
+    def test_cancel_does_not_request_another_image(self, choose) -> None:
+        document = MagicMock(current=Image.new("RGB", (64, 64)))
+        self.assertIsNone(VisualWordHistogramTool().run(None, document))
+        choose.assert_called_once_with(None)
+
+    @patch("forensics_app.tools.set7.histogram.extract_phow", return_value=np.ones(210))
+    @patch("forensics_app.tools.set7.histogram.load_codebook")
+    @patch("forensics_app.tools.set7.histogram.choose_codebook", return_value="codebook.npz")
+    def test_tool_uses_opened_image_and_returns_image_output(self, _choose, load, extract) -> None:
+        model = CodebookModel(np.zeros((10, 128)), CodebookSettings())
+        load.return_value = model
+        image = Image.new("RGB", (64, 64))
+        document = MagicMock(current=image)
+        result = VisualWordHistogramTool().run(None, document)
+        extract.assert_called_once_with(image, model.centers, model.settings)
+        self.assertIsInstance(result.image, Image.Image)
+        self.assertEqual(result.image.size, (1000, 600))
+        self.assertIsNot(result.image, image)
+        self.assertIs(document.current, image)
+        self.assertEqual(result.details["PHOW dimensions"], 210)
+
+
+class VisualWordClassifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = CodebookSettings(words=3, pyramid_levels=(1, 4), sift_size=4, max_image_size=64)
+        self.codebook = CodebookModel(np.zeros((3, 128), dtype=np.float32), self.settings)
+
+    def make_training_images(self, root: Path) -> None:
+        for index, label in enumerate(CLASSES):
+            folder = root / "train" / label
+            folder.mkdir(parents=True)
+            for number in range(4):
+                Image.new("L", (48, 48), index * 80).save(folder / f"{number}.png")
+            test_folder = root / "test" / label
+            test_folder.mkdir(parents=True)
+            (test_folder / "not_read.png").touch()
+
+    def encoded_image(self, image, _centers, _settings) -> np.ndarray:
+        histogram = np.zeros(15, dtype=np.float32)
+        histogram[image.getpixel((0, 0)) // 80] = 100
+        return histogram
+
+    @patch("forensics_app.tools.set7.classification.extract_phow")
+    def test_training_and_save_load_round_trip_are_self_contained(self, extract) -> None:
+        extract.side_effect = self.encoded_image
+        image = Image.new("L", (48, 48), 80)
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            self.make_training_images(root)
+            model = train_classifier(root / "train", self.codebook)
+            self.assertEqual(model.training_images, 12)
+            self.assertEqual(set(model.classifier.classes_), set(CLASSES))
+            self.assertEqual(model.classifier.named_steps["normalizer"].norm, "l1")
+            self.assertTrue(model.classifier.named_steps["svc"].probability)
+            self.assertEqual(extract.call_count, 12)
+            before = predict_image(image, model)
+            path = root / "classifier.joblib"
+            save_classifier(path, model)
+            loaded = load_classifier(path)
+            after = predict_image(image, loaded)
+            mismatched_codebook = CodebookModel(self.codebook.centers, CodebookSettings(words=3, pyramid_levels=(1,)))
+            save_classifier(path, VisualWordClassifier(mismatched_codebook, model.classifier, 12))
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                load_classifier(path)
+        self.assertEqual(loaded.codebook.settings, self.settings)
+        np.testing.assert_array_equal(loaded.codebook.centers, self.codebook.centers)
+        self.assertEqual(before[:3], after[:3])
+        np.testing.assert_array_equal(before[3], after[3])
+        label, probability, scores, _ = after
+        self.assertEqual(label, max(scores, key=scores.get))
+        self.assertEqual(probability, max(scores.values()))
+        self.assertAlmostEqual(sum(scores.values()), 1)
+
+    def test_missing_training_class_is_rejected(self) -> None:
+        with TemporaryDirectory() as name:
+            with self.assertRaisesRegex(ValueError, "Missing training class"):
+                train_classifier(Path(name), self.codebook)
+
+    def test_too_few_training_images_are_rejected(self) -> None:
+        with TemporaryDirectory() as name:
+            folder = Path(name) / CLASSES[0]
+            folder.mkdir()
+            Image.new("L", (48, 48)).save(folder / "one.png")
+            with self.assertRaisesRegex(ValueError, "At least two"):
+                train_classifier(Path(name), self.codebook)
+
+    @patch("forensics_app.tools.set7.classification.extract_phow", return_value=np.zeros(15))
+    def test_featureless_training_and_query_images_are_rejected(self, _extract) -> None:
+        with TemporaryDirectory() as name:
+            self.make_training_images(Path(name))
+            with self.assertRaisesRegex(ValueError, "No SIFT descriptors"):
+                train_classifier(Path(name) / "train", self.codebook)
+        model = VisualWordClassifier(self.codebook, MagicMock(), 12)
+        with self.assertRaisesRegex(ValueError, "No SIFT descriptors"):
+            predict_image(Image.new("L", (8, 8)), model)
+
+    @patch("forensics_app.tools.set7.classification.extract_phow", return_value=np.ones(15))
+    def test_prediction_selects_highest_probability_not_svm_decision(self, _extract) -> None:
+        classifier = MagicMock()
+        classifier.classes_ = np.array(CLASSES)
+        classifier.predict_proba.return_value = np.array([[0.1, 0.2, 0.7]])
+        model = VisualWordClassifier(self.codebook, classifier, 12)
+        label, probability, scores, histogram = predict_image(Image.new("L", (48, 48)), model)
+        self.assertEqual(label, "kangaroo")
+        self.assertEqual(probability, 0.7)
+        self.assertEqual(scores["kangaroo"], 0.7)
+        self.assertEqual(histogram.shape, (15,))
+        classifier.predict.assert_not_called()
+
+    @patch("forensics_app.tools.set7.classification.joblib.load", return_value={"format": "wrong"})
+    def test_incompatible_classifier_is_rejected(self, _load) -> None:
+        with self.assertRaisesRegex(ValueError, "Not a supported"):
+            load_classifier(Path("classifier.joblib"))
+
+    @patch("forensics_app.tools.set7.classification.choose_option", return_value=None)
+    def test_cancel_mode_returns_none(self, _choose) -> None:
+        self.assertIsNone(VisualWordPredictionTool().run(None, MagicMock(current=Image.new("L", (48, 48)))))
+
+    @patch("forensics_app.tools.set7.classification.predict_image")
+    @patch("forensics_app.tools.set7.classification.load_classifier")
+    @patch("forensics_app.tools.set7.classification.filedialog.askopenfilename", return_value="classifier.joblib")
+    @patch("forensics_app.tools.set7.classification.choose_option", return_value="load")
+    def test_saved_classifier_returns_prediction_image_without_training(self, _mode, _file, load, predict) -> None:
+        model = VisualWordClassifier(self.codebook, MagicMock(), 12)
+        load.return_value = model
+        predict.return_value = "kangaroo", 0.7, dict(zip(CLASSES, (0.1, 0.2, 0.7))), np.ones(15)
+        image = Image.new("L", (48, 48))
+        result = VisualWordPredictionTool().run(None, MagicMock(current=image))
+        load.assert_called_once_with(Path("classifier.joblib"))
+        predict.assert_called_once_with(image, model)
+        self.assertEqual(result.details["Prediction"], "kangaroo")
+        self.assertEqual(result.details["Top probability"], 0.7)
+        self.assertIsInstance(result.image, Image.Image)
+        self.assertEqual(result.image.size, (1000, 600))
+        self.assertIsNot(result.image, image)
+
+    @patch("forensics_app.tools.set7.classification.load_classifier")
+    @patch("forensics_app.tools.set7.classification.filedialog.askopenfilename", return_value="")
+    @patch("forensics_app.tools.set7.classification.choose_option", return_value="load")
+    def test_cancel_classifier_picker_does_not_load(self, _mode, _file, load) -> None:
+        self.assertIsNone(VisualWordPredictionTool().run(None, MagicMock(current=Image.new("L", (48, 48)))))
+        load.assert_not_called()
+
+    @patch("forensics_app.tools.set7.classification.predict_image")
+    @patch("forensics_app.tools.set7.classification.save_classifier")
+    @patch("forensics_app.tools.set7.classification.train_classifier")
+    @patch("forensics_app.tools.set7.classification.filedialog.asksaveasfilename", return_value="new.joblib")
+    @patch("forensics_app.tools.set7.classification.filedialog.askdirectory", return_value="selected_training")
+    @patch("forensics_app.tools.set7.classification.load_codebook")
+    @patch("forensics_app.tools.set7.classification.choose_codebook", return_value="codebook.npz")
+    @patch("forensics_app.tools.set7.classification.choose_option", return_value="train")
+    def test_train_mode_uses_selected_folder_saves_then_predicts(
+        self, _mode, _file, load, _folder, _save_file, train, save, predict,
+    ) -> None:
+        load.return_value = self.codebook
+        model = VisualWordClassifier(self.codebook, MagicMock(), 12)
+        train.return_value = model
+        predict.return_value = "butterfly", 0.8, dict(zip(CLASSES, (0.8, 0.1, 0.1))), np.ones(15)
+        image = Image.new("L", (48, 48))
+        result = VisualWordPredictionTool().run(None, MagicMock(current=image))
+        train.assert_called_once_with(Path("selected_training"), self.codebook)
+        save.assert_called_once_with(Path("new.joblib"), model)
+        predict.assert_called_once_with(image, model)
+        self.assertIn("Saved classifier", result.message)
+        self.assertIsInstance(result.image, Image.Image)
+        self.assertEqual(result.image.size, (1000, 600))
+
+    def test_cancel_training_inputs_does_not_train_or_save(self) -> None:
+        for codebook_name, folder_name, save_name in (
+            ("", "training", "new.joblib"),
+            ("codebook.npz", "", "new.joblib"),
+            ("codebook.npz", "training", ""),
+        ):
+            with (
+                self.subTest(codebook=codebook_name, folder=folder_name, save=save_name),
+                patch("forensics_app.tools.set7.classification.choose_option", return_value="train"),
+                patch("forensics_app.tools.set7.classification.choose_codebook", return_value=codebook_name),
+                patch("forensics_app.tools.set7.classification.load_codebook", return_value=self.codebook),
+                patch("forensics_app.tools.set7.classification.filedialog.askdirectory", return_value=folder_name),
+                patch("forensics_app.tools.set7.classification.filedialog.asksaveasfilename", return_value=save_name),
+                patch("forensics_app.tools.set7.classification.train_classifier") as train,
+                patch("forensics_app.tools.set7.classification.save_classifier") as save,
+            ):
+                self.assertIsNone(VisualWordPredictionTool().run(None, MagicMock(current=Image.new("L", (48, 48)))))
+                train.assert_not_called()
+                save.assert_not_called()
 
 
 class DialogHelperTests(unittest.TestCase):
@@ -701,6 +1117,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(
             tuple((category, tuple(tool.tool_id for tool in tools)) for category, tools in registry.categories()),
             (
+                ("Set 7", ("codebook_construction", "visual_word_histogram", "visual_word_prediction")),
                 ("Set 6", ("face_detection", "eigenface_builder", "face_recognition")),
                 ("Set 5", ("corner_detection", "keypoint_descriptors", "image_matching", "closest_image_lookup")),
                 ("Set 4", ("normalized_cross_correlation", "template_matching", "hog", "person_detection")),
