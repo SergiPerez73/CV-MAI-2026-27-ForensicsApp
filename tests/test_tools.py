@@ -29,6 +29,7 @@ from forensics_app.tools.set2.masking import MaskingTool, MaskingSettings
 from forensics_app.tools.set4.normalized_cross_correlation import NormalizedCrossCorrelationTool
 from forensics_app.tools.set4.person_detection import PersonDetectionSettings, PersonDetectionTool
 from forensics_app.tools.set4.template_matching import TemplateMatchingSettings, TemplateMatchingTool
+from forensics_app.tools.set6.face_detection import FaceDetectionSettings, FaceDetectionTool, detect_faces
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -121,6 +122,103 @@ class DialogHelperTests(unittest.TestCase):
         create.return_value.destroy.assert_called_once_with()
         wait.side_effect = None
         self.assertIsNone(choose_option(parent, title="Channel", prompt="Choose:", options={"red": "Red"}))
+
+
+class FaceDetectionTests(unittest.TestCase):
+    def test_face_detection_is_registered_in_set6(self) -> None:
+        registry = build_tool_registry()
+        tools = dict(registry.categories())["Set 6"]
+        self.assertTrue(any(isinstance(tool, FaceDetectionTool) for tool in tools))
+
+    @patch("forensics_app.tools.set6.face_detection.cv2.CascadeClassifier")
+    def test_haar_uses_grayscale_and_selected_settings(self, cascade) -> None:
+        classifier = cascade.return_value
+        classifier.empty.return_value = False
+        classifier.detectMultiScale.return_value = np.array([[5, 6, 12, 14]])
+        image = Image.new("RGBA", (40, 40), (255, 0, 0, 100))
+
+        output, count = detect_faces(image, FaceDetectionSettings("haar", 1.2, 4, 12))
+
+        self.assertEqual(count, 1)
+        self.assertEqual(output.mode, "RGB")
+        self.assertEqual(output.size, image.size)
+        self.assertEqual(classifier.detectMultiScale.call_args.args[0].shape, (40, 40))
+        self.assertEqual(classifier.detectMultiScale.call_args.kwargs, {
+            "scaleFactor": 1.2, "minNeighbors": 4, "minSize": (12, 12),
+        })
+        self.assertEqual(output.getpixel((5, 6)), (0, 255, 0))
+        self.assertEqual(image.getpixel((5, 6)), (255, 0, 0, 100))
+
+    @patch("forensics_app.tools.set6.face_detection.Path.is_file", return_value=True)
+    @patch("forensics_app.tools.set6.face_detection.cv2.FaceDetectorYN.create")
+    def test_yunet_uses_bgr_and_draws_landmarks(self, create, _is_file) -> None:
+        create.return_value.detect.return_value = (1, np.array([
+            [5, 25, 30, 30, 12, 35, 28, 35, 20, 40, 14, 48, 26, 48, 0.95],
+        ]))
+        settings = FaceDetectionSettings("yunet", score_threshold=0.8, nms_threshold=0.4, model_path="face.onnx")
+
+        output, count = detect_faces(Image.new("RGB", (60, 70), "red"), settings)
+
+        create.assert_called_once_with("face.onnx", "", (60, 70), 0.8, 0.4, 5000)
+        np.testing.assert_array_equal(create.return_value.detect.call_args.args[0][0, 0], [0, 0, 255])
+        self.assertEqual(count, 1)
+        self.assertEqual(output.size, (60, 70))
+        self.assertEqual(output.getpixel((12, 35)), (0, 100, 255))
+
+    @patch("forensics_app.tools.set6.face_detection.Path.is_file", return_value=True)
+    @patch("forensics_app.tools.set6.face_detection.cv2.FaceDetectorYN.create")
+    def test_yunet_no_faces_preserves_image(self, create, _is_file) -> None:
+        create.return_value.detect.return_value = (0, None)
+        image = Image.new("RGB", (40, 40), "red")
+
+        output, count = detect_faces(image, FaceDetectionSettings("yunet"))
+
+        self.assertEqual(count, 0)
+        np.testing.assert_array_equal(np.array(output), np.array(image))
+
+    @patch("forensics_app.tools.set6.face_detection.cv2.CascadeClassifier")
+    def test_haar_empty_detections_and_missing_cascade(self, cascade) -> None:
+        cascade.return_value.empty.return_value = False
+        cascade.return_value.detectMultiScale.return_value = ()
+        image = Image.new("L", (40, 40))
+        output, count = detect_faces(image, FaceDetectionSettings("haar"))
+        self.assertEqual(count, 0)
+        self.assertEqual(output.mode, "RGB")
+        cascade.return_value.empty.return_value = True
+        with self.assertRaisesRegex(ValueError, "cascade"):
+            detect_faces(image, FaceDetectionSettings("haar"))
+
+    def test_invalid_settings_are_rejected(self) -> None:
+        image = Image.new("RGB", (40, 40))
+        for settings in (
+            FaceDetectionSettings("unknown"),
+            FaceDetectionSettings("haar", scale_factor=1),
+            FaceDetectionSettings("haar", scale_factor=float("nan")),
+            FaceDetectionSettings("haar", min_neighbors=-1),
+            FaceDetectionSettings("haar", min_size=0),
+            FaceDetectionSettings("yunet", score_threshold=0),
+            FaceDetectionSettings("yunet", nms_threshold=float("nan")),
+            FaceDetectionSettings("yunet", model_path="missing.onnx"),
+        ):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                detect_faces(image, settings)
+
+    @patch("forensics_app.tools.set6.face_detection.choose_face_detection", return_value=None)
+    def test_cancel_returns_none(self, _choose) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (40, 40))
+        self.assertIsNone(FaceDetectionTool().run(None, document))
+
+    @patch("forensics_app.tools.set6.face_detection.choose_face_detection", return_value=FaceDetectionSettings("haar"))
+    @patch("forensics_app.tools.set6.face_detection.detect_faces")
+    def test_tool_returns_image_and_detection_details(self, detect, _choose) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (40, 40))
+        detect.return_value = document.current.copy(), 2
+        result = FaceDetectionTool().run(None, document)
+        self.assertEqual(result.details["Faces detected"], 2)
+        self.assertEqual(result.details["Method"], "Haar / AdaBoost")
+        self.assertEqual(result.image.size, (40, 40))
 
 
 class ToolTests(unittest.TestCase):
@@ -266,7 +364,6 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(unsharp_mask.call_args.kwargs, {
             "radius": 2.0,
             "amount": 1.5,
-            "channel_axis": None,
         })
         self.assertEqual(list(result.image.getdata()), [0, 255])
         self.assertEqual(result.details["Radius"], 2.0)
@@ -428,6 +525,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(result.image.getpixel((0, 0)), (30, 20, 10))
         self.assertEqual(result.details["Channels"], "Red and Blue")
         self.assertEqual(document.current.getpixel((0, 0)), (10, 20, 30))
+        self.assertEqual(_askstring.call_args.kwargs["excluded_channels"], {"Red"})
 
     @patch(
         "forensics_app.tools.set2.channel_swap.choose_channel",
@@ -450,16 +548,6 @@ class ToolTests(unittest.TestCase):
 
         self.assertEqual(result.image.mode, "RGB")
         self.assertEqual(result.image.getpixel((0, 0)), (73, 73, 73))
-
-    @patch(
-        "forensics_app.tools.set2.channel_swap.choose_channel",
-        side_effect=["Red", "Red"],
-    )
-    def test_channel_swap_rejects_same_channel_twice(self, _askstring) -> None:
-        document = ImageDocument()
-        document.current = Image.new("RGB", (1, 1), "red")
-
-        self.assertIsNone(ChannelSwapTool().run(None, document))
 
     @patch(
         "forensics_app.tools.set2.masking.choose_masking",
@@ -613,6 +701,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(
             tuple((category, tuple(tool.tool_id for tool in tools)) for category, tools in registry.categories()),
             (
+                ("Set 6", ("face_detection", "eigenface_builder", "face_recognition")),
                 ("Set 5", ("corner_detection", "keypoint_descriptors", "image_matching", "closest_image_lookup")),
                 ("Set 4", ("normalized_cross_correlation", "template_matching", "hog", "person_detection")),
                 ("Set 3", ("canny_edge_detection", "convolution", "filters", "edge_visualization", "image_sharpening")),

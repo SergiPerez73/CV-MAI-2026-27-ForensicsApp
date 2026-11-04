@@ -50,9 +50,11 @@ class ImageDocument:
         self._redo.clear()
 
     def apply(self, image: Image.Image) -> None:
+        """Apply a tool result, or initialize the document with a generated image."""
         if self.current is None:
-            raise RuntimeError("Load an image before applying a result.")
-        self._undo.append(self.current.copy())
+            self.original = image.copy()
+        else:
+            self._undo.append(self.current.copy())
         self.current = image.copy()
         self._redo.clear()
 

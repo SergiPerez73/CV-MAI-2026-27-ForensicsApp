@@ -29,6 +29,23 @@ class ImageDocumentTests(unittest.TestCase):
         self.assertTrue(self.document.redo())
         self.assertEqual(self.document.current.getpixel((0, 0)), (0, 0, 255))
 
+    def test_generated_image_initializes_empty_document_and_preserves_history(self) -> None:
+        document = ImageDocument()
+        image = Image.new("RGB", (40, 50), "white")
+        document.apply(image)
+        self.assertTrue(document.is_loaded)
+        self.assertIsNone(document.path)
+        self.assertFalse(document.can_undo)
+        self.assertFalse(document.can_redo)
+        image.putpixel((0, 0), (0, 0, 0))
+        self.assertEqual(document.current.getpixel((0, 0)), (255, 255, 255))
+        document.apply(Image.new("RGB", (40, 50), "blue"))
+        self.assertTrue(document.undo())
+        self.assertEqual(document.current.getpixel((0, 0)), (255, 255, 255))
+        self.assertTrue(document.redo())
+        self.assertTrue(document.reset())
+        self.assertEqual(document.current.getpixel((0, 0)), (255, 255, 255))
+
     def test_reset_is_undoable(self) -> None:
         self.document.apply(Image.new("RGB", (8, 6), "blue"))
         self.assertTrue(self.document.reset())

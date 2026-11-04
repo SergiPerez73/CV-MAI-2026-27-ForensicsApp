@@ -20,12 +20,18 @@ from .set5.closest_image_lookup import ClosestImageLookupTool
 from .set5.corner_detection import CornerDetectionTool
 from .set5.image_matching import ImageMatchingTool
 from .set5.keypoint_descriptors import KeypointDescriptorsTool
+from .set6.face_detection import FaceDetectionTool
+from .set6.eigenface_builder import EigenfaceBuilderTool
+from .set6.face_recognition import FaceRecognitionTool
 from .registry import ToolRegistry
 
 
 def build_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
+            FaceDetectionTool(),
+            EigenfaceBuilderTool(),
+            FaceRecognitionTool(),
             CornerDetectionTool(),
             KeypointDescriptorsTool(),
             ImageMatchingTool(),
@@ -61,6 +67,9 @@ __all__ = [
     "ContrastEnhancementTool",
     "ConvolutionTool",
     "EdgeVisualizationTool",
+    "EigenfaceBuilderTool",
+    "FaceDetectionTool",
+    "FaceRecognitionTool",
     "FiltersTool",
     "HistogramTool",
     "HOGTool",
