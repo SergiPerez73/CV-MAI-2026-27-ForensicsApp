@@ -19,7 +19,7 @@ from ..utils import add_dialog_buttons, add_numeric_field, choose_option, create
 METHODS = {"haar": "Haar / AdaBoost", "yunet": "YuNet"}
 DEFAULT_MODEL = (
 	Path(__file__).resolve().parents[3]
-	/ "sets" / "Se6_images" / "face_detection_yunet_2023mar.onnx"
+	/ "sets" / "Set6_images" / "face_detection_yunet_2023mar.onnx"
 )
 
 

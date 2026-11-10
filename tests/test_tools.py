@@ -34,7 +34,7 @@ from forensics_app.tools.set4.person_detection import PersonDetectionSettings, P
 from forensics_app.tools.set4.template_matching import TemplateMatchingSettings, TemplateMatchingTool
 from forensics_app.tools.set6.face_detection import FaceDetectionSettings, FaceDetectionTool, detect_faces
 from forensics_app.tools.set7.codebook import (
-    CLASSES, CodebookConstructionTool, CodebookSettings, build_codebook, compute_histograms,
+    CLASSES, CodebookConstructionTool, CodebookSettings, assign_features_to_words, build_codebook, compute_histograms,
     CodebookModel, extract_phow, extract_pyramid_sift, extract_sift, load_codebook, render_codebook, split_pyramid,
 )
 from forensics_app.tools.set7.histogram import VisualWordHistogramTool, render_histogram
@@ -99,6 +99,14 @@ class CodebookTests(unittest.TestCase):
         centers = np.array([[0, 0], [10, 10]], dtype=np.float32)
         regions = [np.array([[1, 1], [9, 9], [8, 8]], dtype=np.float32), np.empty((0, 2))]
         np.testing.assert_array_equal(compute_histograms(regions, centers), [1, 2, 0, 0])
+
+    def test_feature_assignments_match_histogram_counts_and_descriptor_order(self) -> None:
+        centers = np.array([[0, 0], [10, 10], [20, 20]], dtype=np.float32)
+        regions = [np.array([[19, 19], [1, 1]]), np.empty((0, 2)), np.array([[9, 9], [18, 18]])]
+        histogram, assignments = assign_features_to_words(regions, centers)
+        np.testing.assert_array_equal(assignments, [2, 0, 1, 2])
+        np.testing.assert_array_equal(histogram, [1, 0, 1, 0, 0, 0, 0, 1, 1])
+        np.testing.assert_array_equal(np.bincount(assignments, minlength=3), histogram.reshape(-1, 3).sum(axis=0))
 
     def test_phow_dimensions_follow_pyramid_region_counts_and_k(self) -> None:
         image = Image.fromarray(np.random.default_rng(42).integers(0, 256, (128, 128), dtype=np.uint8))
@@ -266,22 +274,46 @@ class VisualWordHistogramTests(unittest.TestCase):
         output = render_histogram(Image.new("L", (32, 32)), np.zeros(210), CodebookSettings())
         self.assertEqual(output.size, (1000, 600))
 
+    @patch("forensics_app.tools.set7.histogram.figure_to_image")
+    def test_features_connect_to_assigned_visual_word_bars(self, render) -> None:
+        positions = np.array([[4, 8], [12, 16], [20, 24]])
+        assignments = np.array([2, 0, 2])
+        render_histogram(
+            Image.new("RGB", (32, 32)), np.array([1, 0, 2]),
+            CodebookSettings(words=3, pyramid_levels=(1,)),
+            positions=positions, assignments=assignments,
+        )
+        figure = render.call_args.args[0]
+        image_axis, word_axis, _pyramid_axis = figure.axes
+        self.assertEqual(len(image_axis.collections), 0)
+        self.assertEqual(len(figure.artists), len(positions))
+        for connection, position, word in zip(figure.artists, positions, assignments):
+            np.testing.assert_array_equal(connection.xy1, position)
+            np.testing.assert_allclose(connection.xy2, (word, word_axis.patches[word].get_height()))
+            self.assertIs(connection.axesA, image_axis)
+            self.assertIs(connection.axesB, word_axis)
+            self.assertFalse(connection.get_in_layout())
+            np.testing.assert_allclose(
+                connection.get_edgecolor()[:3], word_axis.patches[word].get_facecolor()[:3],
+            )
+
     @patch("forensics_app.tools.set7.histogram.choose_codebook", return_value="")
     def test_cancel_does_not_request_another_image(self, choose) -> None:
         document = MagicMock(current=Image.new("RGB", (64, 64)))
         self.assertIsNone(VisualWordHistogramTool().run(None, document))
         choose.assert_called_once_with(None)
 
-    @patch("forensics_app.tools.set7.histogram.extract_phow", return_value=np.ones(210))
+    @patch("forensics_app.tools.set7.histogram.extract_pyramid_sift")
     @patch("forensics_app.tools.set7.histogram.load_codebook")
     @patch("forensics_app.tools.set7.histogram.choose_codebook", return_value="codebook.npz")
     def test_tool_uses_opened_image_and_returns_image_output(self, _choose, load, extract) -> None:
         model = CodebookModel(np.zeros((10, 128)), CodebookSettings())
         load.return_value = model
+        extract.return_value = np.zeros((32, 32)), [cv2.KeyPoint(8, 12, 4)], [np.zeros((1, 128))] + [np.empty((0, 128))] * 20
         image = Image.new("RGB", (64, 64))
         document = MagicMock(current=image)
         result = VisualWordHistogramTool().run(None, document)
-        extract.assert_called_once_with(image, model.centers, model.settings)
+        extract.assert_called_once_with(image, model.settings)
         self.assertIsInstance(result.image, Image.Image)
         self.assertEqual(result.image.size, (1000, 600))
         self.assertIsNot(result.image, image)

@@ -194,18 +194,29 @@ def extract_pyramid_sift(
 	return gray, keypoints, region_descriptors
 
 
-def compute_histograms(region_descriptors: list[np.ndarray], centers: np.ndarray) -> np.ndarray:
-	"""Concatenate one K-bin visual-word count histogram per pyramid region."""
+def assign_features_to_words(
+	region_descriptors: list[np.ndarray], centers: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+	"""Return region histograms and nearest-centroid labels in descriptor order."""
 	words = len(centers)
 	histograms = []
+	region_assignments = []
 	for descriptors in region_descriptors:
 		if len(descriptors):
 			assignments, _ = pairwise_distances_argmin_min(descriptors, centers)
 			histogram = np.bincount(assignments, minlength=words)
 		else:
+			assignments = np.empty(0, dtype=int)
 			histogram = np.zeros(words, dtype=int)
+		region_assignments.append(assignments)
 		histograms.append(histogram)
-	return np.concatenate(histograms).astype(np.float32)
+	return np.concatenate(histograms).astype(np.float32), np.concatenate(region_assignments)
+
+
+def compute_histograms(region_descriptors: list[np.ndarray], centers: np.ndarray) -> np.ndarray:
+	"""Concatenate one K-bin visual-word count histogram per pyramid region."""
+	histogram, _ = assign_features_to_words(region_descriptors, centers)
+	return histogram
 
 
 def extract_phow(image: Image.Image, centers: np.ndarray, settings: CodebookSettings) -> np.ndarray:
