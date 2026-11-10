@@ -54,7 +54,7 @@ def render_histogram(
 			connection = ConnectionPatch(
 				xyA=position, xyB=(word, word_frequencies[word]),
 				coordsA="data", coordsB="data", axesA=image_axis, axesB=word_axis,
-				color=colors[word], linewidth=0.5, alpha=0.35, clip_on=False,
+				color=colors[word], linewidth=0.5, alpha=0.5, clip_on=False,
 			)
 			connection.set_in_layout(False)
 			figure.add_artist(connection)
