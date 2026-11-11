@@ -37,6 +37,134 @@ python -m unittest discover -s tests -v
 python -m compileall forensics_app
 ```
 
+## Set 8.1: Train a classification CNN
+
+Select **Set 8 > Train classification CNN**; no open image is needed.
+TensorFlow is optional for previous sets. Install the CNN dependency in your
+active environment with `python -m pip install -e ".[cnn]"`.
+Native Windows TensorFlow versions used here run on CPU; use Colab or WSL2
+for GPU training. Training runs synchronously, like previous training tools,
+so the window may be unresponsive until it finishes. Epoch metrics appear
+in the terminal.
+
+Choose **Class folders** to select a training folder containing one subfolder
+per class, with at least two images in each. Class names are sorted folder
+names. Select the training folder, not a parent containing `train/` and `test/`.
+Alternatively, **CIFAR-10 (download)** loads the notebook's dataset through
+Keras. Only its 50,000 official training images are used; the official test
+split is excluded from training and validation. Keras downloads the dataset
+on first use and caches it for later runs.
+
+Choose **Small CNN**, **VGG-style CNN**, or **InceptionV3** in the settings.
+The small CNN follows the notebook: a 32-filter 3 x 3 ReLU convolution with
+He initialization, 2 x 2 max pooling, flattening, a 100-unit ReLU dense layer,
+and a softmax output with one unit per class. Images become RGB float32
+arrays of shape 32 x 32 x 3, scaled to [0, 1] by dividing by 255. Local images
+are resized using Pillow bilinear interpolation without preserving aspect ratio.
+Labels are one-hot encoded in the saved class-name order.
+
+The VGG-style CNN has two 32-filter 3 x 3 ReLU convolutions with same padding,
+max pooling, flattening, a 128-unit ReLU dense layer, and softmax output.
+Small CNN and VGG-style CNN train from scratch. InceptionV3 can train from
+scratch with random weights or use **Transfer learning (ImageNet)** with a
+frozen base, global average pooling, a 1024-unit ReLU dense layer, and softmax
+output. Only the added dense layers train in transfer mode; the base's batch
+normalization layers remain in inference mode. ImageNet weights are downloaded
+by Keras on first use; this is separate from the CIFAR-10 dataset download.
+
+InceptionV3 embeds bilinear resizing to 128 x 128 and scaling from [0, 1] to
+[-1, 1] inside the saved model. The external input remains 32 x 32 RGB in
+[0, 1], so no expanded dataset needs to be held in memory.
+
+Settings default to 50 epochs, batch size 32, SGD learning rate 0.01, and
+validation fraction 0.1, using categorical crossentropy and accuracy.
+InceptionV3 uses Adam; selecting it defaults the learning rate to 0.001.
+**Samples per class (0 = all)** limits the selected training dataset before
+the train/validation split. Use 100 for up to 1,000 CIFAR-10 images; 0 retains
+all images. The limit must be at least 2 when enabled. Sampling is random
+without replacement and reproducible with seed 42; smaller classes retain
+all available images. Folder images are selected before loading, and CIFAR-10
+arrays are selected before float32 normalization. The passport records the
+limit and actual selected class counts. The limit includes validation images.
+
+Timestamped, immediately flushed terminal logs identify dataset scanning and
+loading progress, TensorFlow initialization, InceptionV3 weight loading,
+model compilation, epoch starts and training batches, validation, checkpoint
+restoration, and saved files. Prediction, feature extraction, and projection
+also report their loading/computation stages. t-SNE and UMAP emit their own
+progress output. Training still runs synchronously in the desktop window.
+
+Choose **Validation loss (minimum)** or **Validation accuracy (maximum)** to
+select the best checkpoint. Training completes all requested epochs, then
+restores the best validation weights before saving. Ties keep the first best
+epoch. The passport records the chosen metric, best epoch, and best score;
+results report accuracy and loss at that epoch, not the last epoch.
+A reproducible stratified split (seed 42) reserves validation images before
+training. Very small datasets reserve at least one validation image per class;
+the passport records actual split sizes and per-class counts.
+
+Each run creates `sets/Set8_images/output_YYYYMMDD_HHMMSS_microseconds` with:
+
+- `model.weights.h5`: trained weights, including the classification layer;
+- `architecture.json`: Keras architecture needed to reconstruct the model;
+- `model_summary.txt`: expanded Keras layer summary, including nested
+	InceptionV3 layers, output shapes, parameter counts, and trainable status;
+- `passport.json`: dataset identity, sample sizes, ordered class names,
+  preprocessing instructions, training settings, and full training and
+  validation loss/accuracy history.
+
+The result displays the full training and validation curves and links the saved
+files. Results also lists each actual layer's type, output shape, parameter
+count, trainable status, and settings such as kernel size, padding, and activation.
+Nested InceptionV3 layers have hierarchical numbering. Total, trainable, and
+non-trainable parameter counts appear separately.
+The dense layer named `features` is available for later feature extraction.
+## Set 8.2: Predict image class
+
+Open an image, select **Set 8 > Predict image class**, and choose the
+`passport.json` from a previous training output. Keep `architecture.json`
+and `model.weights.h5` beside it. Only load bundles you created or trust.
+The tool reconstructs the model and loads the saved best-validation weights;
+it does not retrain or download pretrained weights.
+
+The current image is converted to 32 x 32 RGB float32 pixels in [0, 1],
+matching the passport. InceptionV3's additional preprocessing remains inside
+the saved model. The prediction and all class probabilities are displayed
+alongside the image. Results displays every passport field, including dataset,
+sample counts, class order, preprocessing, training history, and selected best
+epoch. The supported bundle format is the one produced by Set 8.1.
+
+## Set 8.3: Extract test features
+
+Select **Set 8 > Extract test features**; no open image is needed. Choose a
+saved model passport, then a test folder containing the same class-named
+subfolders as the passport, for example `sets/set8_images/test`.
+Every class must have at least one image; unknown class folders are rejected.
+Choose the batch size (default 32) and where to save the feature archive.
+
+The tool uses the passport's `feature_layer` (`features`, the penultimate
+dense layer) with inference mode enabled. It processes test images in batches
+without training the model. The compressed `.npz` stores an N x D float32
+feature matrix, true class labels, ordered class names, original image paths,
+and JSON metadata containing the model passport and test-folder identity.
+Small CNN produces 100-dimensional vectors, VGG-style CNN 128-dimensional
+vectors, and InceptionV3 1024-dimensional vectors.
+
+## Set 8.3: Project feature vectors
+
+Select **Set 8 > Project feature vectors**, choose the saved feature `.npz`,
+and select **t-SNE** or **UMAP**. Neither a loaded image, original test images,
+nor the model files are needed. The plot colors represent true test classes,
+not predicted labels. It uses all saved vectors without subsampling.
+
+t-SNE exposes perplexity and iterations (minimum 250). UMAP exposes neighbor
+count and minimum distance. Defaults adapt to the sample count; perplexity
+and neighbors must be smaller than that count. Both methods use random seed
+42. At least three vectors are required. UMAP is optional: install it with
+`python -m pip install -e ".[projection]"`; t-SNE uses the existing scikit-learn
+dependency. Projection is unsupervised and does not use labels to fit the 2D
+embedding. Distances in the plot are not classification confidence scores.
+
 ## Set 6: Face detection
 
 Open an image and select **Set 6 > Face detection**. Choose **Haar / AdaBoost**

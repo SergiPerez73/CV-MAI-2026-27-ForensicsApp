@@ -1,4 +1,6 @@
 import unittest
+import json
+import importlib.util
 from dataclasses import asdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -41,6 +43,16 @@ from forensics_app.tools.set7.histogram import VisualWordHistogramTool, render_h
 from forensics_app.tools.set7.classification import (
     VisualWordClassifier, VisualWordPredictionTool, load_classifier, predict_image, save_classifier, train_classifier,
 )
+from forensics_app.tools.set8.classification import (
+    CNNSettings, CNNTrainingTool, build_cnn, describe_model, get_keras, load_training_images, prepare_image,
+    render_training_history, save_cnn, train_cnn,
+)
+from forensics_app.tools.set8.classification import log_progress, select_sample_indices
+from forensics_app.tools.set8.prediction import CNNPredictionTool, load_cnn, passport_details
+from forensics_app.tools.set8.prediction import predict_image as predict_cnn_image
+from forensics_app.tools.set8.features import CNNFeatureExtractionTool, FeatureVectors, load_features, save_features
+from forensics_app.tools.set8.features import extract_features as extract_cnn_features
+from forensics_app.tools.set8.projection import CNNFeatureProjectionTool, ProjectionSettings, project_features, render_projection
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -48,6 +60,474 @@ from forensics_app.tools.utils import (
     create_dialog,
     wait_for_dialog,
 )
+
+
+class CNNProjectionTests(unittest.TestCase):
+    def vectors(self) -> FeatureVectors:
+        return FeatureVectors(np.random.default_rng(42).normal(size=(12, 8)).astype(np.float32),
+                             np.array([0] * 6 + [1] * 6), np.array([str(index) for index in range(12)]), ("cat", "dog"), {})
+
+    def test_tsne_projects_to_finite_2d_and_renders(self) -> None:
+        vectors = self.vectors()
+        coordinates = project_features(vectors, ProjectionSettings(perplexity=3, iterations=250))
+        self.assertEqual(coordinates.shape, (12, 2))
+        self.assertTrue(np.isfinite(coordinates).all())
+        image = render_projection(coordinates, vectors, "tsne")
+        self.assertEqual(image.mode, "RGB")
+        self.assertGreater(image.width, 0)
+
+    def test_projection_rejects_invalid_parameters(self) -> None:
+        for parameters in ({"method": "bad"}, {"perplexity": 0}, {"iterations": 10}, {"n_neighbors": 1}, {"min_dist": 2}):
+            with self.assertRaises(ValueError):
+                ProjectionSettings(**parameters)
+        with self.assertRaisesRegex(ValueError, "perplexity"):
+            project_features(self.vectors())
+        with self.assertRaisesRegex(ValueError, "neighbors"):
+            project_features(self.vectors(), ProjectionSettings(method="umap", n_neighbors=20))
+
+    @unittest.skipUnless(importlib.util.find_spec("umap"), "UMAP is optional")
+    def test_umap_projects_to_finite_2d(self) -> None:
+        coordinates = project_features(self.vectors(), ProjectionSettings(method="umap", n_neighbors=3))
+        self.assertEqual(coordinates.shape, (12, 2))
+        self.assertTrue(np.isfinite(coordinates).all())
+
+    @patch("forensics_app.tools.set8.projection.filedialog.askopenfilename", return_value="")
+    def test_cancel_returns_none_without_an_open_image(self, _choose) -> None:
+        self.assertFalse(CNNFeatureProjectionTool.requires_image)
+        self.assertIsNone(CNNFeatureProjectionTool().run(None, ImageDocument()))
+
+    def test_tool_loads_saved_features_without_model_or_original_images(self) -> None:
+        with TemporaryDirectory() as name:
+            path = Path(name) / "features.npz"
+            save_features(path, self.vectors())
+            with patch("forensics_app.tools.set8.projection.filedialog.askopenfilename", return_value=str(path)), patch(
+                "forensics_app.tools.set8.projection.choose_projection_settings", return_value=ProjectionSettings(perplexity=3, iterations=250)
+            ):
+                result = CNNFeatureProjectionTool().run(None, ImageDocument())
+            self.assertEqual(result.details["Samples"], 12)
+            self.assertEqual(result.details["Feature dimensions"], 8)
+            self.assertEqual(result.details["method"], "tsne")
+            self.assertEqual(result.image.mode, "RGB")
+
+
+class CNNFeatureTests(unittest.TestCase):
+    def test_feature_archive_round_trip_and_invalid_labels(self) -> None:
+        vectors = FeatureVectors(np.ones((4, 3), dtype=np.float32), np.array([0, 0, 1, 1]),
+                                 np.array(["a", "b", "c", "d"]), ("cat", "dog"), {"feature_layer": "features"})
+        with TemporaryDirectory() as name:
+            path = Path(name) / "features.npz"
+            save_features(path, vectors)
+            loaded = load_features(path)
+            np.testing.assert_array_equal(loaded.features, vectors.features)
+            np.testing.assert_array_equal(loaded.labels, vectors.labels)
+            np.testing.assert_array_equal(loaded.paths, vectors.paths)
+            self.assertEqual(loaded.metadata, vectors.metadata)
+            self.assertEqual(loaded.class_names, vectors.class_names)
+        with self.assertRaises(ValueError):
+            FeatureVectors(vectors.features, np.array([0, 0, 1, 2]), vectors.paths, vectors.class_names, {})
+
+    @patch("forensics_app.tools.set8.features.choose_model", return_value="")
+    def test_cancel_returns_none_without_an_open_image(self, _choose) -> None:
+        self.assertFalse(CNNFeatureExtractionTool.requires_image)
+        self.assertIsNone(CNNFeatureExtractionTool().run(None, ImageDocument()))
+
+    def test_tool_saves_features_with_model_provenance(self) -> None:
+        vectors = FeatureVectors(np.ones((4, 3), dtype=np.float32), np.array([0, 0, 1, 1]),
+                                 np.array(["a", "b", "c", "d"]), ("cat", "dog"), {"feature_layer": "features"})
+        with TemporaryDirectory() as name:
+            path = Path(name) / "features.npz"
+            with patch("forensics_app.tools.set8.features.choose_model", return_value="model/passport.json"), patch(
+                "forensics_app.tools.set8.features.filedialog.askdirectory", return_value="test"
+            ), patch("forensics_app.tools.set8.features.simpledialog.askinteger", return_value=2), patch(
+                "forensics_app.tools.set8.features.filedialog.asksaveasfilename", return_value=str(path)
+            ), patch("forensics_app.tools.set8.features.load_cnn", return_value=(MagicMock(), {})), patch(
+                "forensics_app.tools.set8.features.extract_features", return_value=vectors
+            ) as extract:
+                result = CNNFeatureExtractionTool().run(None, ImageDocument())
+            self.assertEqual(extract.call_args.args[0], Path("test"))
+            self.assertEqual(extract.call_args.args[3], 2)
+            self.assertEqual(result.details["Test images"], 4)
+            saved = load_features(path)
+            self.assertEqual(saved.metadata["model_passport"], str(Path("model/passport.json").resolve()))
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_extraction_uses_test_images_in_batches_and_passport_label_order(self) -> None:
+        model = build_cnn(2)
+        passport = {"class_names": ["dog", "cat"], "feature_layer": "features"}
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            for label, color in (("cat", "red"), ("dog", "blue")):
+                (root / label).mkdir()
+                for index in range(3):
+                    Image.new("RGB", (40, 24), color).save(root / label / f"{index}.png")
+            vectors = extract_cnn_features(root, model, passport, batch_size=2)
+            self.assertEqual(vectors.features.shape, (6, 100))
+            self.assertEqual(vectors.features.dtype, np.float32)
+            np.testing.assert_array_equal(vectors.labels, [0, 0, 0, 1, 1, 1])
+            self.assertTrue(all(Path(path).parent.name == "dog" for path in vectors.paths[:3]))
+            expected = get_keras().Model(inputs=model.inputs[0], outputs=model.get_layer("features").output)
+            np.testing.assert_allclose(vectors.features[:1], expected(prepare_image(Image.new("RGB", (40, 24), "blue"))[None, ...], training=False).numpy(), atol=1e-6)
+            (root / "unknown").mkdir()
+            with self.assertRaisesRegex(ValueError, "Unknown test class"):
+                extract_cnn_features(root, model, passport)
+
+
+class CNNPredictionTests(unittest.TestCase):
+    def test_passport_details_include_nested_preprocessing_and_history(self) -> None:
+        details = passport_details({"class_names": ["cat", "dog"], "preprocessing": {"color_mode": "RGB"}, "training_history": {"loss": [0.5]}})
+        self.assertEqual(details["Passport.preprocessing.color_mode"], "RGB")
+        self.assertEqual(json.loads(details["Passport.class_names"]), ["cat", "dog"])
+        self.assertEqual(json.loads(details["Passport.training_history.loss"]), [0.5])
+
+    @patch("forensics_app.tools.set8.prediction.choose_model", return_value="")
+    def test_cancel_returns_none(self, _choose) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (32, 32))
+        self.assertIsNone(CNNPredictionTool().run(None, document))
+
+    def test_predict_uses_rgb_normalization_and_passport_class_order(self) -> None:
+        model = MagicMock()
+        model.return_value.numpy.return_value = np.array([[0.1, 0.9]])
+        image = Image.new("L", (64, 48), 255)
+        label, scores = predict_cnn_image(image, model, {"class_names": ["dog", "cat"]})
+        self.assertEqual(label, "cat")
+        self.assertEqual(scores["cat"], 0.9)
+        pixels = model.call_args.args[0]
+        self.assertEqual(pixels.shape, (1, 32, 32, 3))
+        self.assertEqual(pixels.dtype, np.float32)
+        np.testing.assert_array_equal(pixels, 1)
+        self.assertFalse(model.call_args.kwargs["training"])
+
+    def test_tool_displays_passport_and_preserves_opened_image(self) -> None:
+        document = ImageDocument()
+        document.current = Image.new("RGB", (40, 30), "blue")
+        original = document.current.copy()
+        model = MagicMock()
+        model.return_value.numpy.return_value = np.array([[0.2, 0.8]])
+        passport = {"class_names": ["cat", "dog"], "dataset": "training folder", "model_selection": {"best_epoch": 3}}
+        with patch("forensics_app.tools.set8.prediction.choose_model", return_value="model/passport.json"), patch(
+            "forensics_app.tools.set8.prediction.load_cnn", return_value=(model, passport)
+        ):
+            result = CNNPredictionTool().run(None, document)
+        self.assertEqual(result.details["Prediction"], "dog")
+        self.assertEqual(result.details["Passport.dataset"], "training folder")
+        self.assertEqual(result.details["Passport.model_selection.best_epoch"], 3)
+        self.assertEqual(result.image.mode, "RGB")
+        np.testing.assert_array_equal(np.array(document.current), np.array(original))
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_saved_bundle_reload_preserves_predictions(self) -> None:
+        model = build_cnn(2)
+        passport = {
+            "format": "classification_cnn_v1", "architecture": "architecture.json", "weights": "model.weights.h5",
+            "class_names": ["cat", "dog"], "feature_layer": "features",
+            "preprocessing": {"input_shape": [32, 32, 3], "color_mode": "RGB", "dtype": "float32", "normalization": "Divide pixel values by 255.0"},
+        }
+        image = Image.new("RGB", (48, 32), "red")
+        with TemporaryDirectory() as name:
+            folder = Path(name)
+            save_cnn(folder, model, passport)
+            loaded, saved_passport = load_cnn(folder / "passport.json")
+            self.assertEqual(saved_passport, passport)
+            _, expected = predict_cnn_image(image, model, passport)
+            _, actual = predict_cnn_image(image, loaded, passport)
+            np.testing.assert_allclose(list(actual.values()), list(expected.values()))
+            passport["class_names"] = ["cat", "cat"]
+            (folder / "passport.json").write_text(json.dumps(passport))
+            with self.assertRaisesRegex(ValueError, "repeat"):
+                load_cnn(folder / "passport.json")
+
+
+class CNNTrainingTests(unittest.TestCase):
+    def test_sample_limit_is_reproducible_and_keeps_smaller_classes(self) -> None:
+        labels = np.array([0] * 12 + [1] * 3)
+        settings = CNNSettings(samples_per_class=4)
+        indices = select_sample_indices(labels, settings)
+        np.testing.assert_array_equal(indices, select_sample_indices(labels, settings))
+        np.testing.assert_array_equal(np.bincount(labels[indices]), [4, 3])
+        np.testing.assert_array_equal(select_sample_indices(labels, CNNSettings()), np.arange(15))
+        self.assertEqual(len(np.unique(indices)), len(indices))
+        for limit in (-1, 1, 2.5):
+            with self.assertRaises(ValueError):
+                CNNSettings(samples_per_class=limit)
+
+    def test_folder_sample_limit_is_applied_before_opening_images(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            for label in ("cat", "dog"):
+                (root / label).mkdir()
+                for index in range(10):
+                    Image.new("RGB", (32, 32), (index, 0, 0)).save(root / label / f"{index}.png")
+            settings = CNNSettings(samples_per_class=2)
+            with patch("forensics_app.tools.set8.classification.Image.open", wraps=Image.open) as opened:
+                images, labels, names = load_training_images(root, settings)
+                self.assertEqual(opened.call_count, 4)
+            repeated, repeated_labels, _ = load_training_images(root, settings)
+            self.assertEqual(names, ("cat", "dog"))
+            np.testing.assert_array_equal(labels, [0, 0, 1, 1])
+            np.testing.assert_array_equal(images, repeated)
+            np.testing.assert_array_equal(labels, repeated_labels)
+
+    @patch("forensics_app.tools.set8.classification.get_keras")
+    @patch("forensics_app.tools.set8.classification.build_cnn")
+    def test_training_sample_limit_precedes_validation_split_and_is_saved(self, build, _keras) -> None:
+        build.return_value.fit.return_value.history = {"loss": [0.5], "accuracy": [0.7], "val_loss": [0.6], "val_accuracy": [0.5]}
+        images = np.zeros((20, 32, 32, 3), dtype=np.float32)
+        labels = np.array([0] * 10 + [1] * 10)
+        _, passport = train_cnn(images, labels, ("cat", "dog"), "test", CNNSettings(epochs=1, samples_per_class=4, validation_fraction=0.25))
+        self.assertEqual(passport["sample_size"], 8)
+        self.assertEqual(passport["samples_per_class"], {"cat": 4, "dog": 4})
+        self.assertEqual(passport["training_samples"], 6)
+        self.assertEqual(passport["validation_samples"], 2)
+        self.assertEqual(passport["settings"]["samples_per_class"], 4)
+
+    @patch("builtins.print")
+    def test_progress_logs_are_timestamped_and_flushed(self, output) -> None:
+        log_progress("Loading weights...")
+        self.assertIn("[Set 8] Loading weights...", output.call_args.args[0])
+        self.assertTrue(output.call_args.kwargs["flush"])
+
+    def test_registered_without_requiring_an_image(self) -> None:
+        tools = dict(build_tool_registry().categories())["Set 8"]
+        self.assertTrue(any(isinstance(tool, CNNTrainingTool) for tool in tools))
+        self.assertFalse(CNNTrainingTool.requires_image)
+
+    def test_settings_reject_invalid_values(self) -> None:
+        for values in ({"epochs": 0}, {"batch_size": 0}, {"learning_rate": float("nan")},
+                       {"validation_fraction": 1}, {"seed": -1}, {"selection_metric": "loss"},
+                       {"architecture": "unknown"}, {"training_mode": "unknown"}, {"training_mode": "transfer"}):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                CNNSettings(**values)
+
+    def test_preprocessing_resizes_converts_rgb_and_normalizes(self) -> None:
+        pixels = prepare_image(Image.new("L", (64, 48), 255))
+        self.assertEqual(pixels.shape, (32, 32, 3))
+        self.assertEqual(pixels.dtype, np.float32)
+        np.testing.assert_array_equal(pixels, np.ones((32, 32, 3)))
+
+    def test_folder_labels_follow_sorted_class_names(self) -> None:
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            for label in ("dog", "cat"):
+                (root / label).mkdir()
+                for index in range(2):
+                    Image.new("RGB", (40, 30)).save(root / label / f"{index}.png")
+            images, labels, names = load_training_images(root)
+            self.assertEqual(names, ("cat", "dog"))
+            self.assertEqual(images.shape, (4, 32, 32, 3))
+            np.testing.assert_array_equal(labels, [0, 0, 1, 1])
+            (root / "empty").mkdir()
+            with self.assertRaisesRegex(ValueError, "At least two images"):
+                load_training_images(root)
+
+    @patch("forensics_app.tools.set8.classification.get_keras")
+    @patch("forensics_app.tools.set8.classification.build_cnn")
+    def test_training_uses_stratified_validation_and_saves_passport(self, build, keras) -> None:
+        model = build.return_value
+        model.fit.return_value.history = {
+            "loss": [np.float32(0.7)], "accuracy": [0.5], "val_loss": [0.8], "val_accuracy": [0.4],
+        }
+        model.to_json.return_value = '{"class_name": "Sequential"}'
+        images = np.zeros((20, 32, 32, 3), dtype=np.float32)
+        labels = np.array([0] * 10 + [1] * 10)
+        settings = CNNSettings(epochs=1, validation_fraction=0.2)
+        trained, passport = train_cnn(images, labels, ("cat", "dog"), "test dataset", settings)
+        self.assertIs(trained, model)
+        build.assert_called_once_with(2, settings)
+        training_labels = model.fit.call_args.args[1]
+        validation_labels = model.fit.call_args.kwargs["validation_data"][1]
+        np.testing.assert_array_equal(training_labels.sum(axis=0), [8, 8])
+        np.testing.assert_array_equal(validation_labels.sum(axis=0), [2, 2])
+        self.assertEqual(passport["sample_size"], 20)
+        self.assertEqual(passport["training_samples"], 16)
+        self.assertEqual(passport["validation_samples"], 4)
+        self.assertEqual(passport["class_names"], ["cat", "dog"])
+        model.load_weights.assert_called_once()
+        checkpoint_options = keras.return_value.callbacks.ModelCheckpoint.call_args.kwargs
+        self.assertEqual(checkpoint_options["monitor"], "val_loss")
+        self.assertTrue(checkpoint_options["save_best_only"])
+        self.assertEqual(passport["model_selection"]["best_epoch"], 1)
+        self.assertEqual(passport["samples_per_class"], {"cat": 10, "dog": 10})
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            save_cnn(root, trained, passport)
+            model.save_weights.assert_called_once_with(root / "model.weights.h5")
+            saved = json.loads((root / "passport.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved, passport)
+            self.assertEqual(saved["preprocessing"]["input_shape"], [32, 32, 3])
+            self.assertEqual(saved["settings"]["epochs"], 1)
+            self.assertEqual(saved["training_history"]["accuracy"], [0.5])
+            self.assertEqual(json.loads((root / "architecture.json").read_text())["class_name"], "Sequential")
+        self.assertGreater(render_training_history(passport["training_history"]).width, 0)
+
+    @patch("forensics_app.tools.set8.classification.get_keras")
+    @patch("forensics_app.tools.set8.classification.build_cnn")
+    def test_selection_uses_validation_metric_and_restores_checkpoint(self, build, keras) -> None:
+        model = build.return_value
+        model.fit.return_value.history = {
+            "loss": [0.9, 0.5, 0.2], "accuracy": [0.4, 0.6, 0.9],
+            "val_loss": [0.7, 0.4, 0.6], "val_accuracy": [0.8, 0.7, 0.6],
+        }
+        images = np.zeros((20, 32, 32, 3), dtype=np.float32)
+        labels = np.array([0] * 10 + [1] * 10)
+        for metric, epoch, mode in (("val_loss", 2, "min"), ("val_accuracy", 1, "max")):
+            with self.subTest(metric=metric):
+                _, passport = train_cnn(images, labels, ("cat", "dog"), "test", CNNSettings(epochs=3, selection_metric=metric))
+                self.assertEqual(passport["model_selection"]["best_epoch"], epoch)
+                self.assertEqual(passport["model_selection"]["mode"], mode)
+                self.assertEqual(keras.return_value.callbacks.ModelCheckpoint.call_args.kwargs["monitor"], metric)
+        self.assertEqual(model.load_weights.call_count, 2)
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_saved_weights_are_the_best_epoch_not_the_last(self) -> None:
+        keras = get_keras()
+        images = np.zeros((20, 32, 32, 3), dtype=np.float32)
+        labels = np.array([0] * 10 + [1] * 10)
+        metrics = {
+            "loss": [0.9, 0.5, 0.2], "accuracy": [0.4, 0.6, 0.9],
+            "val_loss": [0.7, 0.4, 0.6], "val_accuracy": [0.8, 0.8, 0.6],
+        }
+        for metric, best_epoch in (("val_loss", 2), ("val_accuracy", 1)):
+            with self.subTest(metric=metric):
+                model = keras.Sequential([
+                    keras.layers.Input(shape=(32, 32, 3)), keras.layers.Flatten(), keras.layers.Dense(2),
+                ])
+
+                def fit_epochs(*_args, **kwargs):
+                    checkpoint = kwargs["callbacks"][0]
+                    checkpoint.set_model(model)
+                    for epoch in range(3):
+                        model.set_weights([np.full_like(weight, epoch + 1) for weight in model.get_weights()])
+                        checkpoint.on_epoch_end(epoch, {key: values[epoch] for key, values in metrics.items()})
+                    return MagicMock(history=metrics)
+
+                with patch("forensics_app.tools.set8.classification.build_cnn", return_value=model), patch.object(model, "fit", side_effect=fit_epochs):
+                    trained, passport = train_cnn(images, labels, ("cat", "dog"), "test", CNNSettings(epochs=3, selection_metric=metric))
+                self.assertEqual(passport["model_selection"]["best_epoch"], best_epoch)
+                with TemporaryDirectory() as name:
+                    root = Path(name)
+                    save_cnn(root, trained, passport)
+                    restored = keras.models.model_from_json((root / "architecture.json").read_text(encoding="utf-8"))
+                    restored.load_weights(root / "model.weights.h5")
+                    for weights in restored.get_weights():
+                        np.testing.assert_array_equal(weights, np.full_like(weights, best_epoch))
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_small_and_vgg_architectures_match_the_notebook(self) -> None:
+        keras = get_keras()
+        for architecture, convolutions, units in (("small_cnn", 1, 100), ("vgg_cnn", 2, 128)):
+            with self.subTest(architecture=architecture):
+                model = build_cnn(3, CNNSettings(architecture=architecture))
+                self.assertEqual(model.input_shape, (None, 32, 32, 3))
+                self.assertEqual(model.output_shape, (None, 3))
+                self.assertEqual(sum(isinstance(layer, keras.layers.Conv2D) for layer in model.layers), convolutions)
+                self.assertEqual(model.get_layer("features").units, units)
+                self.assertIsInstance(model.optimizer, keras.optimizers.SGD)
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_model_details_include_layer_settings_shapes_and_parameter_counts(self) -> None:
+        model = build_cnn(10)
+        details = describe_model(model)
+        self.assertEqual(details["Model input shape"], "(None, 32, 32, 3)")
+        self.assertEqual(details["Model output shape"], "(None, 10)")
+        self.assertEqual(details["Total parameters"], model.count_params())
+        self.assertEqual(details["Trainable parameters"], model.count_params())
+        self.assertEqual(details["Non-trainable parameters"], 0)
+        layers = [value for key, value in details.items() if key.startswith("Layer ")]
+        self.assertEqual(len(layers), 5)
+        self.assertIn("Conv2D; output=(None, 30, 30, 32)", layers[0])
+        self.assertIn('"kernel_size": [3, 3]', layers[0])
+        self.assertIn('"activation": "relu"', layers[0])
+        self.assertIn('"units": 100', layers[3])
+        self.assertIn('"activation": "softmax"', layers[4])
+        with TemporaryDirectory() as name:
+            root = Path(name)
+            save_cnn(root, model, {})
+            summary = (root / "model_summary.txt").read_text(encoding="utf-8")
+            self.assertIn("small_cnn", summary)
+            self.assertIn("Conv2D", summary)
+            self.assertIn("Total params", summary)
+
+    @unittest.skipUnless(importlib.util.find_spec("tensorflow"), "TensorFlow is optional")
+    def test_inception_modes_resize_normalize_and_freeze_only_transfer_base(self) -> None:
+        keras = get_keras()
+        for mode, weights in (("scratch", None), ("transfer", "imagenet")):
+            with self.subTest(mode=mode):
+                inputs = keras.layers.Input(shape=(128, 128, 3))
+                features = keras.layers.Conv2D(2, 1)(inputs)
+                features = keras.layers.BatchNormalization()(features)
+                base = keras.Model(inputs, features, name="inception_v3")
+                with patch.object(keras.applications, "InceptionV3", return_value=base) as factory:
+                    model = build_cnn(3, CNNSettings(architecture="inception_v3", training_mode=mode, learning_rate=0.001))
+                factory.assert_called_once_with(include_top=False, weights=weights, input_shape=(128, 128, 3))
+                self.assertEqual(base.trainable, mode == "scratch")
+                self.assertEqual(model.input_shape, (None, 32, 32, 3))
+                self.assertEqual(model.output_shape, (None, 3))
+                self.assertEqual(model.get_layer("features").units, 1024)
+                self.assertIsInstance(model.optimizer, keras.optimizers.Adam)
+                preprocessing = keras.Model(model.inputs, model.get_layer("inception_preprocessing").output)
+                np.testing.assert_allclose(preprocessing(np.zeros((1, 32, 32, 3))).numpy(), -1)
+                np.testing.assert_allclose(preprocessing(np.ones((1, 32, 32, 3))).numpy(), 1)
+                if mode == "transfer":
+                    details = describe_model(model)
+                    nested = [value for key, value in details.items() if key.startswith("Layer 4.")]
+                    self.assertTrue(any("BatchNormalization" in value and "trainable=False" in value for value in nested))
+                    self.assertGreater(details["Non-trainable parameters"], 0)
+                    original = [weight.copy() for weight in base.get_weights()]
+                    model.train_on_batch(np.ones((2, 32, 32, 3)), np.eye(3)[[0, 1]])
+                    for before, after in zip(original, base.get_weights()):
+                        np.testing.assert_array_equal(before, after)
+
+    @patch("forensics_app.tools.set8.classification.choose_option", return_value=None)
+    def test_cancel_returns_none(self, _choose) -> None:
+        self.assertIsNone(CNNTrainingTool().run(None, ImageDocument()))
+
+    @patch("forensics_app.tools.set8.classification.build_cnn")
+    def test_invalid_labels_and_validation_split_fail_before_training(self, build) -> None:
+        images = np.zeros((4, 32, 32, 3), dtype=np.float32)
+        for labels, settings in ((np.array([0, 0, 1, 2]), CNNSettings()),
+                                 (np.array([0, 0, 1, 1]), CNNSettings(validation_fraction=0.9))):
+            with self.assertRaises(ValueError):
+                train_cnn(images, labels, ("cat", "dog"), "test", settings)
+        build.assert_not_called()
+
+    @patch("forensics_app.tools.set8.classification.build_cnn")
+    def test_empty_and_out_of_range_pixels_fail_before_training(self, build) -> None:
+        for images, labels in ((np.empty((0, 32, 32, 3)), np.array([], dtype=int)),
+                               (np.full((4, 32, 32, 3), 255), np.array([0, 0, 1, 1]))):
+            with self.assertRaises(ValueError):
+                train_cnn(images, labels, ("cat", "dog"), "test")
+        build.assert_not_called()
+
+    @patch("forensics_app.tools.set8.classification.describe_model", return_value={"Total parameters": 123})
+    @patch("forensics_app.tools.set8.classification.get_keras")
+    @patch("forensics_app.tools.set8.classification.choose_cnn_settings", return_value=CNNSettings(epochs=1))
+    @patch("forensics_app.tools.set8.classification.choose_option", return_value="cifar10")
+    @patch("forensics_app.tools.set8.classification.train_cnn")
+    @patch("forensics_app.tools.set8.classification.save_cnn")
+    def test_cifar_tool_uses_training_split_and_exports_results(self, save, train, _source, _settings, keras, describe) -> None:
+        keras.return_value.datasets.cifar10.load_data.return_value = (
+            (np.full((20, 32, 32, 3), 255, dtype=np.uint8), np.arange(20).reshape(-1, 1) % 10),
+            (np.zeros((10, 32, 32, 3), dtype=np.uint8), np.arange(10).reshape(-1, 1)),
+        )
+        train.return_value = MagicMock(), {
+            "training_samples": 10, "validation_samples": 10,
+            "model_selection": {"best_epoch": 1},
+            "training_history": {"loss": [1.0], "accuracy": [0.5], "val_loss": [1.2], "val_accuracy": [0.4]},
+        }
+        result = CNNTrainingTool().run(None, ImageDocument())
+        self.assertEqual(train.call_args.args[0].shape, (20, 32, 32, 3))
+        self.assertEqual(train.call_args.args[0].dtype, np.float32)
+        self.assertEqual(float(train.call_args.args[0].min()), 1.0)
+        self.assertEqual(train.call_args.args[1].shape, (20,))
+        self.assertEqual(len(train.call_args.args[2]), 10)
+        self.assertEqual(result.details["Training images"], 10)
+        self.assertEqual(result.details["Validation accuracy"], 0.4)
+        self.assertTrue(result.details["Weights"].endswith("model.weights.h5"))
+        self.assertEqual(result.details["Total parameters"], 123)
+        self.assertTrue(result.details["Model summary"].endswith("model_summary.txt"))
+        describe.assert_called_once_with(train.return_value[0])
+        save.assert_called_once()
 
 
 class CodebookTests(unittest.TestCase):
@@ -1149,6 +1629,7 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(
             tuple((category, tuple(tool.tool_id for tool in tools)) for category, tools in registry.categories()),
             (
+                ("Set 8", ("cnn_training", "cnn_prediction", "cnn_feature_extraction", "cnn_feature_projection")),
                 ("Set 7", ("codebook_construction", "visual_word_histogram", "visual_word_prediction")),
                 ("Set 6", ("face_detection", "eigenface_builder", "face_recognition")),
                 ("Set 5", ("corner_detection", "keypoint_descriptors", "image_matching", "closest_image_lookup")),

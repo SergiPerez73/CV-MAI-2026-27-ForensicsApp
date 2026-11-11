@@ -26,12 +26,20 @@ from .set6.face_recognition import FaceRecognitionTool
 from .set7.codebook import CodebookConstructionTool
 from .set7.histogram import VisualWordHistogramTool
 from .set7.classification import VisualWordPredictionTool
+from .set8.classification import CNNTrainingTool
+from .set8.prediction import CNNPredictionTool
+from .set8.features import CNNFeatureExtractionTool
+from .set8.projection import CNNFeatureProjectionTool
 from .registry import ToolRegistry
 
 
 def build_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
+            CNNTrainingTool(),
+            CNNPredictionTool(),
+            CNNFeatureExtractionTool(),
+            CNNFeatureProjectionTool(),
             CodebookConstructionTool(),
             VisualWordHistogramTool(),
             VisualWordPredictionTool(),
@@ -70,6 +78,10 @@ __all__ = [
     "CannyEdgeDetectionTool",
     "ClosestImageLookupTool",
     "CodebookConstructionTool",
+    "CNNTrainingTool",
+    "CNNPredictionTool",
+    "CNNFeatureExtractionTool",
+    "CNNFeatureProjectionTool",
     "VisualWordHistogramTool",
     "VisualWordPredictionTool",
     "CornerDetectionTool",
