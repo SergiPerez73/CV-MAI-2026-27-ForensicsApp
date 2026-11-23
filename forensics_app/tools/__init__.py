@@ -30,12 +30,18 @@ from .set8.classification import CNNTrainingTool
 from .set8.prediction import CNNPredictionTool
 from .set8.features import CNNFeatureExtractionTool
 from .set8.projection import CNNFeatureProjectionTool
+from .set9.comparison import BloodCellComparisonTool
+from .set9.object_detection import ObjectDetectionTool
+from .set9.training import BloodCellTrainingTool
 from .registry import ToolRegistry
 
 
 def build_tool_registry() -> ToolRegistry:
     return ToolRegistry(
         [
+            ObjectDetectionTool(),
+            BloodCellTrainingTool(),
+            BloodCellComparisonTool(),
             CNNTrainingTool(),
             CNNPredictionTool(),
             CNNFeatureExtractionTool(),
@@ -73,6 +79,8 @@ def build_tool_registry() -> ToolRegistry:
 __all__ = [
     "ToolRegistry",
     "build_tool_registry",
+    "BloodCellComparisonTool",
+    "BloodCellTrainingTool",
     "ChannelSplitTool",
     "ChannelSwapTool",
     "CannyEdgeDetectionTool",
@@ -99,6 +107,7 @@ __all__ = [
     "KeypointDescriptorsTool",
     "MaskingTool",
     "NormalizedCrossCorrelationTool",
+    "ObjectDetectionTool",
     "PersonDetectionTool",
     "TemplateMatchingTool",
 ]

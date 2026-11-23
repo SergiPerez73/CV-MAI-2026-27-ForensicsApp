@@ -37,6 +37,47 @@ python -m unittest discover -s tests -v
 python -m compileall forensics_app
 ```
 
+## Set 9.1: Detect objects with pretrained YOLO
+
+Install the optional detector with `python -m pip install -e ".[yolo]"` in
+your active environment. Open an image and choose **Set 9 > Detect objects
+(YOLO)** to draw labeled boxes with confidence scores on the current image.
+The Results panel lists detection counts by class. If there are no detections,
+the image stays unchanged.
+
+The detector loads the official weights from `sets/set9_images/yolo11n.pt`,
+regardless of where you launch the app. If the file is missing, place a trusted
+copy there before running detection. No GPU or blood-cell dataset is required.
+
+When sharing a Python 3.11 environment with Set 8's TensorFlow 2.17, keep NumPy
+and OpenCV compatible with it by installing with
+`python -m pip install -e ".[yolo]" "numpy<2" "opencv-python<4.12"`.
+
+## Set 9.2: Train a blood-cell detector
+
+Select **Set 9 > Train blood-cell detector (YOLO)**. No open image is needed.
+Choose `sets/set9_images/blood_cell.v1i.coco` as the input and select a folder
+with room for a copy of the dataset and the training outputs. Set the number
+of epochs and batch size (defaults: 50 and 16).
+
+Each run creates a `blood_cells_*` folder with a converted `dataset` and a
+`training` folder containing logs, plots, and `weights/best.pt` for Set 9.3.
+Training starts from scratch with YOLO11 Nano, uses the validation split to
+select the checkpoint, and reserves the test split for later. Training uses
+CUDA when available and otherwise runs on CPU, which can take much longer.
+
+## Set 9.3: Compare blood-cell detections
+
+Open an unedited image from the run's `dataset/test/images` folder (or an
+identical copy). Select **Set 9 > Compare blood-cell detections (YOLO)** and
+choose the completed `blood_cells_*` run folder from Set 9.2. Only load a run
+you created or trust.
+
+The preview shows ground truth on the left and predictions with confidence
+scores on the right. The Results panel lists box counts for each class. No
+retraining is required; this is a visual comparison, not a test-set accuracy
+measurement.
+
 ## Set 8.1: Train a classification CNN
 
 Select **Set 8 > Train classification CNN**; no open image is needed.

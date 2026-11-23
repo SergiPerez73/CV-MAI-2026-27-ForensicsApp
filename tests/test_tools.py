@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import cv2
-from PIL import Image
+from PIL import Image, ImageColor
 
 from forensics_app.core import ImageDocument
 from forensics_app.tools import build_tool_registry
@@ -53,6 +53,10 @@ from forensics_app.tools.set8.prediction import predict_image as predict_cnn_ima
 from forensics_app.tools.set8.features import CNNFeatureExtractionTool, FeatureVectors, load_features, save_features
 from forensics_app.tools.set8.features import extract_features as extract_cnn_features
 from forensics_app.tools.set8.projection import CNNFeatureProjectionTool, ProjectionSettings, project_features, render_projection
+from forensics_app.tools.set9.comparison import COLORS, BloodCellComparisonTool, CellBox, compare_test_image, read_labels
+from forensics_app.tools.set9.dataset import coco_to_yolo
+from forensics_app.tools.set9.object_detection import ObjectDetectionTool
+from forensics_app.tools.set9.training import BloodCellTrainingTool
 from forensics_app.tools.utils import (
     add_dialog_buttons,
     add_numeric_field,
@@ -60,6 +64,141 @@ from forensics_app.tools.utils import (
     create_dialog,
     wait_for_dialog,
 )
+
+
+class BloodCellComparisonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        work = TemporaryDirectory()
+        self.addCleanup(work.cleanup)
+        self.run_dir = Path(work.name)
+        self.image = self.run_dir / "dataset/test/images/sample.png"
+        self.labels = self.run_dir / "dataset/test/labels/sample.txt"
+        self.weights = self.run_dir / "training/weights/best.pt"
+        for path in (self.image, self.labels, self.weights):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (100, 80), "white").save(self.image)
+        self.labels.write_text("1 0.5 0.5 0.4 0.5", encoding="utf-8")
+        self.weights.touch()
+
+    def test_is_registered_as_an_image_tool(self) -> None:
+        tools = dict(build_tool_registry().categories())["Set 9"]
+        self.assertTrue(any(isinstance(tool, BloodCellComparisonTool) and tool.requires_image for tool in tools))
+
+    @patch("forensics_app.tools.set9.comparison.filedialog.askopenfilename")
+    @patch("forensics_app.tools.set9.comparison.filedialog.askdirectory")
+    @patch("forensics_app.tools.set9.comparison.predict_cells", return_value=[])
+    def test_uses_open_image_and_only_asks_for_run_folder(self, predict, choose_run, choose_image) -> None:
+        copy = self.run_dir / self.image.name
+        copy.write_bytes(self.image.read_bytes())
+        document = ImageDocument()
+        document.load(copy)
+        choose_run.return_value = str(self.run_dir)
+
+        result = BloodCellComparisonTool().run(None, document)
+
+        choose_run.assert_called_once()
+        choose_image.assert_not_called()
+        self.assertEqual(predict.call_args.args[1], document.current)
+        self.assertEqual(result.details["Test image"], copy.name)
+        document.apply(Image.new("RGB", (100, 80), "black"))
+        with self.assertRaisesRegex(ValueError, "Reset or reopen"):
+            BloodCellComparisonTool().run(None, document)
+        choose_run.assert_called_once()
+
+    @patch("forensics_app.tools.set9.comparison.predict_cells", return_value=[])
+    def test_uses_pixel_boxes_and_renders_with_no_predictions(self, predict) -> None:
+        self.assertEqual(read_labels(self.labels, (100, 80)), [CellBox(1, (30, 20, 70, 60))])
+        result = compare_test_image(self.run_dir, self.image)
+        self.assertIsNotNone(result.image)
+        self.assertEqual(result.image.getpixel((30, 66)), ImageColor.getrgb(COLORS[1]))
+        self.assertEqual(result.image.getpixel((138, 66)), (255, 255, 255))
+        self.assertEqual(result.details["RBC"], "1 ground truth / 0 predicted")
+        self.assertEqual(predict.call_args.args[0], self.weights)
+
+    def test_rejects_missing_files_and_non_test_image(self) -> None:
+        other = self.run_dir / self.image.name
+        Image.new("RGB", (100, 80), "black").save(other)
+        with self.assertRaisesRegex(ValueError, "Open an image from"):
+            compare_test_image(self.run_dir, other)
+        self.labels.unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "Ground-truth label file not found"):
+            compare_test_image(self.run_dir, self.image)
+        self.weights.unlink()
+        with self.assertRaisesRegex(FileNotFoundError, "checkpoint not found"):
+            compare_test_image(self.run_dir, self.image)
+
+
+class BloodCellTrainingTests(unittest.TestCase):
+    def test_is_registered_without_an_image_requirement(self) -> None:
+        tools = dict(build_tool_registry().categories())["Set 9"]
+        tool = next(tool for tool in tools if tool.tool_id == "yolo_blood_cell_training")
+        self.assertIsInstance(tool, BloodCellTrainingTool)
+        self.assertFalse(tool.requires_image)
+
+    def test_coco_conversion_preserves_images_and_normalizes_boxes(self) -> None:
+        with TemporaryDirectory() as work:
+            source = Path(work) / "source"
+            source.mkdir()
+            for name in ("cells.png", "empty.png"):
+                Image.new("RGB", (100, 50)).save(source / name)
+            (source / "_annotations.coco.json").write_text(json.dumps({
+                "images": [
+                    {"id": 4, "file_name": "cells.png", "width": 100, "height": 50},
+                    {"id": 5, "file_name": "empty.png", "width": 100, "height": 50},
+                ],
+                "categories": [{"id": 0, "name": "unused"}, {"id": 21, "name": "RBC"}],
+                "annotations": [{"image_id": 4, "category_id": 21, "bbox": [-10, 5, 30, 20]}],
+            }), encoding="utf-8")
+            destination = Path(work) / "converted"
+
+            self.assertEqual(coco_to_yolo(source, destination), 2)
+            self.assertEqual((destination / "images/cells.png").read_bytes(), (source / "cells.png").read_bytes())
+            self.assertEqual((destination / "labels/cells.txt").read_text(), "1 0.1 0.3 0.2 0.4")
+            self.assertEqual((destination / "labels/empty.txt").read_text(), "")
+            with self.assertRaises(FileExistsError):
+                coco_to_yolo(source, destination)
+
+
+class ObjectDetectionTests(unittest.TestCase):
+    def test_is_registered_as_an_image_tool(self) -> None:
+        tools = dict(build_tool_registry().categories())["Set 9"]
+        tool = next(tool for tool in tools if tool.tool_id == "yolo_object_detection")
+        self.assertIsInstance(tool, ObjectDetectionTool)
+        self.assertTrue(tool.requires_image)
+
+    @patch("forensics_app.tools.set9.object_detection.load_detector")
+    def test_runs_on_current_image_and_returns_rgb_annotations(self, load_detector) -> None:
+        source = Image.new("RGB", (5, 4), (200, 30, 10))
+        document = MagicMock(spec=ImageDocument, current=source)
+        prediction = MagicMock()
+        prediction.boxes.__len__.return_value = 3
+        prediction.boxes.cls.tolist.return_value = [0, 1, 0]
+        prediction.names = {0: "person", 1: "bus"}
+        prediction.plot.return_value = np.full((4, 5, 3), (10, 30, 200), dtype=np.uint8)
+        predict = load_detector.return_value.predict
+        predict.return_value = [prediction]
+
+        result = ObjectDetectionTool().run(None, document)
+
+        self.assertEqual(predict.call_args.args[0].tobytes(), source.tobytes())
+        self.assertEqual(predict.call_args.kwargs["conf"], 0.25)
+        self.assertEqual(result.image.mode, "RGB")
+        self.assertEqual(result.image.size, source.size)
+        self.assertEqual(result.image.getpixel((0, 0)), (200, 30, 10))
+        self.assertEqual(result.details["Detections"], 3)
+        self.assertEqual(result.details["By class"], "bus: 1, person: 2")
+
+    @patch("forensics_app.tools.set9.object_detection.load_detector")
+    def test_empty_detections_return_no_replacement_image(self, load_detector) -> None:
+        document = MagicMock(spec=ImageDocument, current=Image.new("RGB", (5, 4)))
+        prediction = MagicMock(boxes=[])
+        load_detector.return_value.predict.return_value = [prediction]
+
+        result = ObjectDetectionTool().run(None, document)
+
+        self.assertIsNone(result.image)
+        self.assertEqual(result.details["Detections"], 0)
+        prediction.plot.assert_not_called()
 
 
 class CNNProjectionTests(unittest.TestCase):

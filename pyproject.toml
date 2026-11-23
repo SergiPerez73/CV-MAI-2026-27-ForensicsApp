@@ -12,6 +12,7 @@ dependencies = ["Pillow>=10.0,<13", "matplotlib>=3.8", "scikit-image>=0.22", "sc
 [project.optional-dependencies]
 cnn = ["tensorflow>=2.16,<3"]
 projection = ["umap-learn>=0.5,<0.6"]
+yolo = ["ultralytics>=8.3,<9"]
 
 [tool.setuptools.packages.find]
 include = ["forensics_app*"]
